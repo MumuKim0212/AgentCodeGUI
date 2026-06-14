@@ -1,0 +1,645 @@
+import { app } from 'electron'
+import { spawn, type ChildProcess } from 'node:child_process'
+import path from 'node:path'
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
+import { pathToFileURL, fileURLToPath } from 'node:url'
+import { StdioRpc } from './jsonrpc'
+import { DOWNLOADS, install, installState, installedBin, uninstall } from './install'
+import { ensureUeClangDb } from './ue'
+import { APP_HOME } from '../engine/versions'
+import type {
+  LspHoverResult,
+  LspInstallProgress,
+  LspLocation,
+  LspPos,
+  LspSemanticTokens,
+  LspServerInfo,
+  LspStatus
+} from '@shared/protocol'
+
+/* ============================================================
+ * LSP manager — lazy, per-project language servers powering the
+ * in-app viewer's code intelligence (hover types + go-to-definition).
+ *
+ * The "index" lives inside the server process; we only ask
+ * questions over JSON-RPC. Two provisioning kinds:
+ *  - bundled: pure-JS servers shipped in node_modules, run on
+ *    Electron's own Node (TypeScript, Python/pyright)
+ *  - download: native binaries fetched on demand into the app
+ *    home (C#/OmniSharp, C++/clangd) — see install.ts
+ * ============================================================ */
+
+interface SpawnPlan {
+  cmd: string
+  args: string[]
+  env?: Record<string, string>
+}
+
+interface ServerDef {
+  id: string
+  label: string
+  langs: string // display name of the covered languages (settings list)
+  kind: 'bundled' | 'download'
+  exts: Record<string, string> // extension → LSP languageId
+  requires?: string // external prerequisite, shown in settings (e.g. .NET SDK)
+  /** how to launch the server, or null when its binary/module is missing */
+  command(): SpawnPlan | null
+  initializationOptions?(): unknown
+  /** 파일별 서버 루트 — 기본은 열린 프로젝트(cwd). C#은 가장 가까운 .csproj 폴더로
+   *  좁힌다: UE 같은 모노레포 루트의 무관한 sln(엔진 자동화 프로젝트 수십 개)을
+   *  물면 정작 보는 파일이 어느 프로젝트에도 속하지 않아 토큰이 안 나온다 */
+  rootFor?(abs: string, cwd: string): string
+}
+
+// 소스 없는 .NET 어셈블리 심볼(F12 → BCL 타입 등)의 디컴파일 소스를 떨궈 두는 곳.
+// 이 안의 파일은 읽기 전용 뷰 — LSP를 붙여봐야 misc 문서라 status에서 제외한다.
+const METADATA_DIR = path.join(APP_HOME, 'metadata')
+
+/** OmniSharp의 $metadata$ 가짜 경로 → o#/metadata 요청 파라미터.
+ *  '$metadata$/Project/<P>/Assembly/<A>/Symbol/<T>.cs' 꼴이고 이름의 '.'이
+ *  경로 구분자로 풀려 있다(System.Runtime → System/Runtime). */
+function parseMetadataPath(p: string): { ProjectName: string; AssemblyName: string; TypeName: string } | null {
+  const m = /\$metadata\$[/\\]Project[/\\](.+)[/\\]Assembly[/\\](.+)[/\\]Symbol[/\\](.+)\.cs$/.exec(p)
+  if (!m) return null
+  const undot = (s: string): string => s.replace(/[/\\]/g, '.')
+  return { ProjectName: undot(m[1]), AssemblyName: undot(m[2]), TypeName: undot(m[3]) }
+}
+
+/** 파일에서 위로 올라가며 .csproj가 있는 첫 폴더 — cwd 경계(또는 16단계)까지. */
+function nearestCsProjectRoot(absFile: string, cwd: string): string | null {
+  const stop = cwd ? path.resolve(cwd).toLowerCase() : ''
+  let dir = path.dirname(path.resolve(absFile))
+  for (let i = 0; i < 16; i++) {
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(dir)
+    } catch {
+      /* unreadable — keep walking */
+    }
+    if (names.some((n) => n.toLowerCase().endsWith('.csproj'))) return dir
+    if (dir.toLowerCase() === stop) break
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+// keep a server's working set bounded — beyond this, the least recently
+// opened document is closed so server memory doesn't grow with every file viewed
+const MAX_OPEN_DOCS = 32
+// a crashed/failed server isn't respawned until this much time has passed,
+// so a broken install can't spawn-loop
+const RESPAWN_COOLDOWN = 30_000
+
+interface DocState {
+  version: number
+  mtimeMs: number
+  size: number
+}
+
+interface ServerHandle {
+  rpc: StdioRpc
+  child: ChildProcess
+  status: 'starting' | 'ready' | 'error'
+  ready: Promise<void>
+  docs: Map<string, DocState> // uri → sync state (insertion order = open order)
+  diedAt: number
+  // the server's semanticTokens legend (token type names + modifier names) from the
+  // initialize result — null when the server doesn't do semantic highlighting
+  semLegend: { types: string[]; mods: string[] } | null
+}
+
+// Resolve a file that ships in the app's node_modules. In a packaged build the
+// LSP server runs as a plain Node child process and must read real files, so
+// node_modules is asarUnpack'ed and we prefer the .unpacked mirror; in dev this
+// is just the project's node_modules.
+function shippedModule(...rel: string[]): string | null {
+  const appPath = app.getAppPath()
+  const bases = [appPath.replace(/app\.asar$/, 'app.asar.unpacked'), appPath]
+  for (const base of bases) {
+    const p = path.join(base, 'node_modules', ...rel)
+    try {
+      if (fs.existsSync(p)) return p
+    } catch {
+      /* keep looking */
+    }
+  }
+  return null
+}
+
+// run a pure-JS server on Electron's own Node — users don't need Node installed
+function nodeServer(script: string | null, ...args: string[]): SpawnPlan | null {
+  if (!script) return null
+  return { cmd: process.execPath, args: [script, ...args], env: { ELECTRON_RUN_AS_NODE: '1' } }
+}
+
+// kill a server *and its children* — on Windows, child.kill() leaves grandchildren
+// (e.g. OmniSharp's MSBuild worker nodes) alive and holding file locks
+function killTree(child: ChildProcess): void {
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    } else {
+      child.kill()
+    }
+  } catch {
+    /* already gone */
+  }
+}
+
+const SERVERS: ServerDef[] = [
+  {
+    id: 'ts',
+    label: 'TypeScript',
+    langs: 'TypeScript · JavaScript',
+    kind: 'bundled',
+    exts: {
+      ts: 'typescript',
+      mts: 'typescript',
+      cts: 'typescript',
+      tsx: 'typescriptreact',
+      js: 'javascript',
+      mjs: 'javascript',
+      cjs: 'javascript',
+      jsx: 'javascriptreact'
+    },
+    command: () => nodeServer(shippedModule('typescript-language-server', 'lib', 'cli.mjs'), '--stdio'),
+    initializationOptions: () => {
+      // pin the bundled tsserver so resolution never depends on the opened project
+      const tsserver = shippedModule('typescript', 'lib', 'tsserver.js')
+      return tsserver ? { tsserver: { path: tsserver } } : undefined
+    }
+  },
+  {
+    id: 'py',
+    label: 'Python',
+    langs: 'Python',
+    kind: 'bundled',
+    exts: { py: 'python', pyw: 'python', pyi: 'python' },
+    command: () => nodeServer(shippedModule('pyright', 'langserver.index.js'), '--stdio')
+  },
+  {
+    id: 'cs',
+    label: 'C#',
+    langs: 'C#',
+    kind: 'download',
+    requires: '.NET SDK(dotnet) 필요',
+    exts: { cs: 'csharp', csx: 'csharp' },
+    // needs the .NET SDK (`dotnet` on PATH) — a given on C# dev machines. Roll-forward
+    // lets the net6.0 build run on whatever newer runtime the SDK ships.
+    command: () => {
+      const dll = installedBin('cs')
+      return dll ? { cmd: 'dotnet', args: [dll, '-lsp'], env: { DOTNET_ROLL_FORWARD: 'LatestMajor' } } : null
+    },
+    rootFor: (abs, cwd) => nearestCsProjectRoot(abs, cwd) ?? cwd
+  },
+  {
+    id: 'cpp',
+    label: 'C/C++',
+    langs: 'C · C++',
+    kind: 'download',
+    // .h defaults to C++ — the common case in the wild (and clangd mostly
+    // decides from compile flags / content anyway)
+    exts: { c: 'c', h: 'cpp', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hxx: 'cpp', hh: 'cpp' },
+    command: () => {
+      const bin = installedBin('cpp')
+      return bin ? { cmd: bin, args: ['--background-index'] } : null
+    }
+  }
+]
+
+function serverDefFor(absPath: string): ServerDef | null {
+  const ext = path.extname(absPath).slice(1).toLowerCase()
+  if (!ext) return null
+  return SERVERS.find((s) => ext in s.exts) ?? null
+}
+
+// hover `contents` arrives as string | MarkedString | MarkupContent | arrays of
+// those — flatten everything into one markdown string for the renderer
+function hoverMarkdown(contents: unknown): string {
+  const one = (c: unknown): string => {
+    if (typeof c === 'string') return c
+    if (c && typeof c === 'object') {
+      const o = c as { language?: string; value?: string }
+      if (typeof o.value !== 'string') return ''
+      if (o.language) return '```' + o.language + '\n' + o.value + '\n```'
+      return o.value
+    }
+    return ''
+  }
+  const parts = Array.isArray(contents) ? contents.map(one) : [one(contents)]
+  return parts.filter(Boolean).join('\n\n').trim()
+}
+
+interface RawRange {
+  start?: { line?: number; character?: number }
+}
+interface RawLocation {
+  uri?: string
+  targetUri?: string
+  range?: RawRange
+  targetSelectionRange?: RawRange
+  targetRange?: RawRange
+}
+
+class LspManager {
+  private servers = new Map<string, ServerHandle>()
+
+  /**
+   * Code-intelligence status for a file — and the lazy kick-off: asking for the
+   * status spawns the project's server / warms the document in the background.
+   * The renderer polls this while 'starting'/'installing' and turns the features
+   * on at 'ready'. Downloadable servers report 'need-install' until the user
+   * explicitly installs them.
+   */
+  status(cwd: string, relPath: string): LspStatus {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return 'unsupported'
+    // 디컴파일 메타데이터 뷰 — 어느 프로젝트에도 속하지 않으니 LSP를 붙이지 않는다
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return 'unsupported'
+    if (def.kind === 'download') {
+      const st = installState(def.id)
+      if (st === 'installing') return 'installing'
+      if (st === 'none') return 'need-install'
+    }
+    // UE 프로젝트면 clangd용 compile_commands.json을 백그라운드로 생성/갱신 —
+    // 이미 떠 있던 clangd는 'DB 없음'을 캐시하므로 생성됐을 때 재시작해 준다
+    if (def.id === 'cpp') this.maybeUeDb(cwd)
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return 'error'
+    if (s.status !== 'error') {
+      void s.ready.then(() => this.openDoc(s, def, abs)).catch(() => {})
+    }
+    return s.status
+  }
+
+  // 프로젝트 루트당 한 번만 — generate가 끝나 'generated'면 그 루트의 clangd 재시작
+  private ueKicked = new Set<string>()
+  private maybeUeDb(root: string): void {
+    if (process.platform !== 'win32' || !root) return
+    const key = path.resolve(root).toLowerCase()
+    if (this.ueKicked.has(key)) return
+    this.ueKicked.add(key)
+    void ensureUeClangDb(root).then((r) => {
+      if (r === 'generated') this.restart('cpp', root)
+    })
+  }
+
+  /** Drop a project's server so the next ask respawns it fresh (no cooldown). */
+  private restart(defId: string, root: string): void {
+    const key = `${defId}|${path.resolve(root).toLowerCase()}`
+    const s = this.servers.get(key)
+    if (!s) return
+    this.servers.delete(key) // exit 핸들러보다 먼저 지워 쿨다운 없이 재스폰되게
+    s.rpc.dispose('compile_commands.json 갱신 — 분석 서버 재시작')
+    killTree(s.child)
+  }
+
+  /** Download a 'download'-kind server (user-initiated from the viewer chip). */
+  async install(
+    cwd: string,
+    relPath: string,
+    onProgress: (p: LspInstallProgress) => void
+  ): Promise<{ ok: boolean; error?: string }> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!def || def.kind !== 'download' || !DOWNLOADS[def.id]) {
+      return { ok: false, error: '설치형 분석 서버가 아니에요' }
+    }
+    return install(def.id, onProgress)
+  }
+
+  /**
+   * Semantic highlighting for a whole document. Returns the server's tokens with
+   * relative positions already decoded to absolute (line, char, len, typeIndex,
+   * modifierBits) quintuples; null when this file's server doesn't do semantic tokens.
+   */
+  async semanticTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null> {
+    const ctx = await this.prep(cwd, relPath)
+    if (!ctx || !ctx.semLegend) return null
+    // a failed/timed-out request reports "supported but empty" — null is reserved
+    // for "this server has no semantic tokens", which stops the renderer's retries
+    const r = await ctx.rpc
+      .request<{ data?: number[] } | null>('textDocument/semanticTokens/full', { textDocument: { uri: ctx.uri } }, 30000)
+      .catch(() => null)
+    const raw = r?.data
+    if (!Array.isArray(raw) || raw.length === 0) {
+      // OmniSharp: 프로젝트 로드가 끝나기 전에 didOpen된 문서는 misc 워크스페이스에
+      // 묶여 영영 빈 토큰만 온다 — 문서를 닫아 두면 다음 재시도(렌더러 폴링)의
+      // didOpen이 로드된 프로젝트에 재연결된다. clangd는 재파싱이 비싸서 제외.
+      ctx.reopen?.()
+      return { data: [], types: ctx.semLegend.types, mods: ctx.semLegend.mods }
+    }
+    const data: number[] = []
+    let line = 0
+    let char = 0
+    for (let i = 0; i + 4 < raw.length; i += 5) {
+      const dLine = raw[i]
+      line += dLine
+      char = dLine === 0 ? char + raw[i + 1] : raw[i + 1]
+      data.push(line, char, raw[i + 2], raw[i + 3], raw[i + 4])
+    }
+    return { data, types: ctx.semLegend.types, mods: ctx.semLegend.mods }
+  }
+
+  /** Every known language server + its provisioning state, for the settings tab. */
+  listServers(): LspServerInfo[] {
+    return SERVERS.map((def) => {
+      const exts = Object.keys(def.exts)
+        .map((e) => '.' + e)
+        .join(' ')
+      const base = { id: def.id, label: def.label, langs: def.langs, exts, requires: def.requires }
+      if (def.kind === 'bundled') {
+        return { ...base, kind: 'bundled' as const, state: def.command() ? ('bundled' as const) : ('none' as const) }
+      }
+      return { ...base, kind: 'download' as const, state: installState(def.id) }
+    })
+  }
+
+  /** Download a server by id (settings tab). */
+  async installServer(id: string, onProgress: (p: LspInstallProgress) => void): Promise<{ ok: boolean; error?: string }> {
+    const def = SERVERS.find((s) => s.id === id)
+    if (!def || def.kind !== 'download') return { ok: false, error: '설치형 분석 서버가 아니에요' }
+    return install(id, onProgress)
+  }
+
+  /** Remove a downloaded server: stop every running instance, then delete from disk. */
+  async uninstallServer(id: string): Promise<void> {
+    for (const [key, s] of [...this.servers]) {
+      if (key.startsWith(id + '|')) {
+        s.rpc.dispose('서버 삭제')
+        killTree(s.child)
+        this.servers.delete(key)
+      }
+    }
+    await uninstall(id)
+  }
+
+  /** Hover info (markdown signature + docs) at an LSP (0-based) position. */
+  async hover(cwd: string, relPath: string, pos: LspPos): Promise<LspHoverResult | null> {
+    const ctx = await this.prep(cwd, relPath)
+    if (!ctx) return null
+    const r = await ctx.rpc.request<{ contents?: unknown } | null>('textDocument/hover', {
+      textDocument: { uri: ctx.uri },
+      position: pos
+    })
+    const contents = hoverMarkdown(r?.contents)
+    return contents ? { contents } : null
+  }
+
+  /** Definition target(s) for the symbol at an LSP (0-based) position. */
+  async definition(cwd: string, relPath: string, pos: LspPos): Promise<LspLocation[]> {
+    const ctx = await this.prep(cwd, relPath)
+    if (!ctx) return []
+    const r = await ctx.rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
+      textDocument: { uri: ctx.uri },
+      position: pos
+    })
+    const list = Array.isArray(r) ? r : r ? [r] : []
+    const out: LspLocation[] = []
+    for (const loc of list) {
+      const uri = loc.uri ?? loc.targetUri
+      const range = loc.range ?? loc.targetSelectionRange ?? loc.targetRange
+      const start = range?.start
+      if (!uri || !uri.startsWith('file:') || typeof start?.line !== 'number') continue
+      try {
+        out.push({ path: fileURLToPath(uri), line: start.line, character: start.character ?? 0 })
+      } catch {
+        /* unparseable uri — skip */
+      }
+    }
+    // C#: 소스 없는 어셈블리 심볼은 $metadata$ 가짜 경로로 온다 — o#/metadata로
+    // 디컴파일 소스를 받아 캐시 파일로 떨구고 그 경로로 바꿔치기해서, F12가
+    // BCL 타입에서도 (읽기 전용) 원본을 연다. 실패하면 원래 경로 그대로(기존 동작).
+    for (const o of out) {
+      if (!o.path.includes('$metadata$')) continue
+      const meta = parseMetadataPath(o.path)
+      if (!meta) continue
+      try {
+        const safe = (s: string): string => s.replace(/[^\w.\-]/g, '_')
+        const file = path.join(METADATA_DIR, safe(meta.AssemblyName), safe(meta.TypeName) + '.cs')
+        if (!fs.existsSync(file)) {
+          const m = await ctx.rpc.request<{ Source?: string } | null>('o#/metadata', { ...meta, Timeout: 5000 }, 15000)
+          if (!m?.Source) continue
+          await fsp.mkdir(path.dirname(file), { recursive: true })
+          await fsp.writeFile(file, m.Source)
+        }
+        o.path = file
+      } catch {
+        /* 메타데이터 조회 실패 — 가짜 경로 유지 (뷰어가 '열 수 없음'을 보여준다) */
+      }
+    }
+    return out
+  }
+
+  /** Kill every server (app quit). */
+  disposeAll(): void {
+    for (const s of this.servers.values()) {
+      s.rpc.dispose('앱 종료')
+      killTree(s.child)
+    }
+    this.servers.clear()
+  }
+
+  // ── internals ──────────────────────────────────────────────
+
+  private resolve(cwd: string, relPath: string): string | null {
+    if (!relPath) return null
+    if (path.isAbsolute(relPath)) return relPath
+    return cwd ? path.join(cwd, relPath) : null
+  }
+
+  /** Get (or spawn) the server of this kind owning this project root. */
+  private ensure(def: ServerDef, root: string): ServerHandle | null {
+    if (!root) return null
+    const key = `${def.id}|${path.resolve(root).toLowerCase()}`
+    const existing = this.servers.get(key)
+    if (existing) {
+      if (existing.status !== 'error') return existing
+      if (Date.now() - existing.diedAt < RESPAWN_COOLDOWN) return existing
+      this.servers.delete(key) // cooled down — try a fresh spawn below
+    }
+
+    const plan = def.command()
+    if (!plan) return null
+
+    let child: ChildProcess
+    try {
+      child = spawn(plan.cmd, plan.args, {
+        cwd: path.resolve(root),
+        env: { ...process.env, ...plan.env },
+        stdio: ['pipe', 'pipe', 'ignore'],
+        windowsHide: true
+      })
+    } catch {
+      return null
+    }
+
+    const rpc = new StdioRpc(child)
+    rpc.onRequest = (method, params) => {
+      // answer the handful of server→client requests tsserver-ls actually sends;
+      // an unanswered request can stall the server's queue
+      if (method === 'workspace/configuration') {
+        const items = (params as { items?: unknown[] } | undefined)?.items
+        return Array.isArray(items) ? items.map(() => null) : []
+      }
+      if (method === 'workspace/applyEdit') return { applied: false }
+      return null
+    }
+
+    const handle: ServerHandle = {
+      rpc,
+      child,
+      status: 'starting',
+      ready: Promise.resolve(),
+      docs: new Map(),
+      diedAt: 0,
+      semLegend: null
+    }
+    const rootUri = pathToFileURL(path.resolve(root)).href
+    handle.ready = rpc
+      .request<{
+        capabilities?: { semanticTokensProvider?: { legend?: { tokenTypes?: string[]; tokenModifiers?: string[] } } }
+      }>(
+        'initialize',
+        {
+          processId: process.pid,
+          rootUri,
+          workspaceFolders: [{ uri: rootUri, name: path.basename(root) }],
+          capabilities: {
+            textDocument: {
+              hover: { contentFormat: ['markdown', 'plaintext'] },
+              definition: {},
+              synchronization: { dynamicRegistration: false },
+              semanticTokens: {
+                requests: { full: true },
+                tokenTypes: [
+                  'namespace', 'type', 'class', 'enum', 'interface', 'struct', 'typeParameter', 'parameter',
+                  'variable', 'property', 'enumMember', 'event', 'function', 'method', 'macro', 'keyword',
+                  'modifier', 'comment', 'string', 'number', 'regexp', 'operator', 'decorator'
+                ],
+                tokenModifiers: [
+                  'declaration', 'definition', 'readonly', 'static', 'deprecated',
+                  'abstract', 'async', 'modification', 'documentation', 'defaultLibrary'
+                ],
+                formats: ['relative']
+              }
+            },
+            workspace: { workspaceFolders: true }
+          },
+          ...(def.initializationOptions?.() != null ? { initializationOptions: def.initializationOptions() } : {})
+        },
+        // OmniSharp answers initialize only after loading the whole solution — on a
+        // real project that's minutes, not seconds. The chip honestly shows 준비 중
+        // for the duration; the timeout is just a backstop against a truly hung server.
+        600000
+      )
+      .then((res) => {
+        const legend = res?.capabilities?.semanticTokensProvider?.legend
+        const types = legend?.tokenTypes
+        handle.semLegend =
+          Array.isArray(types) && types.length
+            ? { types, mods: Array.isArray(legend?.tokenModifiers) ? legend.tokenModifiers : [] }
+            : null
+        rpc.notify('initialized', {})
+        handle.status = 'ready'
+      })
+    handle.ready.catch(() => {
+      handle.status = 'error'
+      handle.diedAt = Date.now()
+      // a server that failed/hung initialize would linger forever — take it down
+      // so the cooldown respawn starts from a clean slate
+      killTree(child)
+      rpc.dispose('초기화 실패')
+    })
+    child.on('error', () => {
+      handle.status = 'error'
+      handle.diedAt = Date.now()
+      rpc.dispose('LSP 서버 실행 실패')
+    })
+    child.on('exit', () => {
+      handle.status = 'error'
+      handle.diedAt = Date.now()
+      handle.docs.clear()
+      rpc.dispose('LSP 서버가 종료됨')
+    })
+
+    this.servers.set(key, handle)
+    return handle
+  }
+
+  /** Server ready + document opened/synced — the common front half of every query. */
+  private async prep(
+    cwd: string,
+    relPath: string
+  ): Promise<{
+    rpc: StdioRpc
+    uri: string
+    semLegend: { types: string[]; mods: string[] } | null
+    /** C#: 문서를 닫아 다음 didOpen 때 로드된 프로젝트로 재연결 (빈 토큰 자가 회복) */
+    reopen?: () => void
+  } | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return null
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return null
+    try {
+      await s.ready
+      const uri = await this.openDoc(s, def, abs)
+      const reopen =
+        def.id === 'cs'
+          ? (): void => {
+              if (!s.docs.has(uri)) return
+              s.docs.delete(uri)
+              s.rpc.notify('textDocument/didClose', { textDocument: { uri } })
+            }
+          : undefined
+      return { rpc: s.rpc, uri, semLegend: s.semLegend, reopen }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * didOpen the file (or didChange when it changed on disk since — e.g. the agent
+   * just edited it), so the server's view always matches what the viewer shows.
+   */
+  private async openDoc(s: ServerHandle, def: ServerDef, abs: string): Promise<string> {
+    const uri = pathToFileURL(abs).href
+    const st = await fsp.stat(abs)
+    const cur = s.docs.get(uri)
+    if (cur && cur.mtimeMs === st.mtimeMs && cur.size === st.size) return uri
+    const text = await fsp.readFile(abs, 'utf8')
+    if (!cur) {
+      s.docs.set(uri, { version: 1, mtimeMs: st.mtimeMs, size: st.size })
+      const ext = path.extname(abs).slice(1).toLowerCase()
+      s.rpc.notify('textDocument/didOpen', {
+        textDocument: { uri, languageId: def.exts[ext] ?? Object.values(def.exts)[0], version: 1, text }
+      })
+      if (s.docs.size > MAX_OPEN_DOCS) {
+        const oldest = s.docs.keys().next().value
+        if (oldest && oldest !== uri) {
+          s.docs.delete(oldest)
+          s.rpc.notify('textDocument/didClose', { textDocument: { uri: oldest } })
+        }
+      }
+    } else {
+      cur.version++
+      cur.mtimeMs = st.mtimeMs
+      cur.size = st.size
+      s.rpc.notify('textDocument/didChange', {
+        textDocument: { uri, version: cur.version },
+        contentChanges: [{ text }] // no range → full-content replace
+      })
+    }
+    return uri
+  }
+}
+
+export const lspManager = new LspManager()

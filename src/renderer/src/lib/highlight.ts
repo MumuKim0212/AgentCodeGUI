@@ -1,0 +1,39 @@
+import hljs from 'highlight.js/lib/common'
+
+// escape the three HTML-significant chars so raw code can be dropped into innerHTML safely
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'))
+}
+
+// highlight.js → HTML. Uses the named language when hljs knows it, falls back to
+// auto-detect, then to plain escaped text. Shared by the markdown renderer and the
+// file viewer card so both produce identically-themed `.hljs-*` token markup.
+export function highlightCode(code: string, lang: string): string {
+  try {
+    if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value
+    return hljs.highlightAuto(code).value
+  } catch {
+    return escapeHtml(code)
+  }
+}
+
+// highlight.js → per-line HTML. hljs token <span>s can cross newlines (template
+// strings, block comments), so a naive split would break the markup — this
+// re-balances the tags: spans still open at a line's end are closed there and
+// re-opened at the start of the next line. Lets the file viewer render each line
+// as its own element (LSP hit-testing + line jumps) with identical colors.
+export function highlightToLines(code: string, lang: string): string[] {
+  const html = highlightCode(code, lang)
+  const tagRe = /<span[^>]*>|<\/span>/g
+  const stack: string[] = []
+  return html.split('\n').map((line) => {
+    const reopened = stack.join('')
+    let m: RegExpExecArray | null
+    tagRe.lastIndex = 0
+    while ((m = tagRe.exec(line))) {
+      if (m[0] === '</span>') stack.pop()
+      else stack.push(m[0])
+    }
+    return reopened + line + '</span>'.repeat(stack.length)
+  })
+}

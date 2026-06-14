@@ -1,0 +1,197 @@
+import type {
+  RunRequest,
+  PermissionResponse,
+  QuestionResponse,
+  MultiRunRequest,
+  MultiPermissionResponse,
+  MultiQuestionResponse,
+  EngineEvent,
+  WindowState,
+  WindowBounds,
+  ResizeEdge,
+  UsageInfo,
+  UserProfile,
+  EngineVersionEntry,
+  EngineVersionState,
+  EngineInstallProgress,
+  FileReadResult,
+  DirEntry,
+  SkillInfo,
+  McpServerInfo,
+  UpdateStatus,
+  LspStatus,
+  LspPos,
+  LspHoverResult,
+  LspLocation,
+  LspSemanticTokens,
+  LspInstallProgress,
+  LspServerInfo,
+  GitStatus,
+  GitCommit,
+  GitChange,
+  GitFileAt,
+  GitOpResult
+} from './protocol'
+
+/** The surface exposed to the renderer via `window.api` (contextBridge). */
+export interface WindowApi {
+  run(req: RunRequest): Promise<string>
+  cancel(): Promise<void>
+  respondPermission(res: PermissionResponse): Promise<void>
+  respondQuestion(res: QuestionResponse): Promise<void>
+  pickDirectory(): Promise<string | null>
+  /** open a file dialog filtered to images; returns the chosen absolute paths */
+  pickImages(): Promise<string[]>
+  /** persist raw image bytes (a pasted screenshot / dragged-in image with no path) to a
+   *  temp file in the app home and return its absolute path, so it can be shown + attached */
+  saveImageData(bytes: ArrayBuffer, ext: string): Promise<string>
+  /** resolve the absolute filesystem path of a dragged-in File (Electron webUtils) */
+  pathForFile(file: File): string
+  getUsage(): Promise<UsageInfo>
+  /** load the saved local user profile, or null when none has been set */
+  getProfile(): Promise<UserProfile | null>
+  /** persist the local user profile (nickname + avatar color) */
+  saveProfile(profile: UserProfile): Promise<void>
+  /** load the persisted chat list blob (renderer-owned shape), or null when none */
+  getChats(): Promise<unknown>
+  /** persist the chat list blob so conversations survive a restart */
+  saveChats(data: unknown): Promise<void>
+  /** load the renderer UI prefs blob (viewer size/zoom, chat zoom) from the app home folder */
+  getUiPrefs(): Promise<Record<string, unknown>>
+  /** persist the whole UI prefs blob to ~/.agentcodegui/ui-prefs.json */
+  saveUiPrefs(prefs: Record<string, unknown>): Promise<void>
+  /** open a file (cwd-relative) with the OS default app */
+  openPath(cwd: string, relPath: string): Promise<void>
+  /** read a file's text content (cwd-relative or absolute) for the in-app viewer card */
+  readFile(cwd: string, relPath: string): Promise<FileReadResult>
+  /** enumerate project files (relative POSIX paths) to power the "@" mention palette */
+  listFiles(cwd: string): Promise<string[]>
+  /** list one folder's entries (folders first) for the file explorer — `rel` is cwd-relative ('' = root) */
+  listDir(cwd: string, rel: string): Promise<DirEntry[]>
+  /** git — 탐색기의 Git 카드 (히스토리·변경 사항·커밋/푸시/풀) */
+  git: {
+    /** cwd가 속한 레포 최상위(.git 상위 폴더 탐색 포함), 없으면 null — cwd별 캐시 */
+    root(cwd: string, force?: boolean): Promise<string | null>
+    /** 브랜치·ahead/behind·작업 트리 변경·브랜치/원격/태그 목록 */
+    status(root: string): Promise<GitStatus | null>
+    /** 커밋 목록 (푸시 여부 포함) */
+    log(root: string, limit?: number): Promise<GitCommit[]>
+    /** 한 커밋의 변경 파일 + 증감 */
+    commitDetail(root: string, hash: string): Promise<GitChange[]>
+    /** 커밋 시점 파일 내용 + 부모→커밋 diff — 뷰어가 그 시점을 그대로 보여줄 때 */
+    fileAt(root: string, hash: string, path: string): Promise<GitFileAt>
+    /** 작업 트리 파일의 HEAD→디스크 diff — 뷰어 마킹용 (내용은 디스크에서 읽음) */
+    workingFile(root: string, path: string): Promise<GitFileAt>
+    /** add -A 후 커밋 */
+    commit(root: string, subject: string, body: string): Promise<GitOpResult>
+    push(root: string): Promise<GitOpResult>
+    /** --ff-only 풀 */
+    pull(root: string): Promise<GitOpResult>
+  }
+  /** LSP code intelligence for the in-app viewer (lazy per-project language servers) */
+  lsp: {
+    /** current status for a file — asking also warms up the project's server */
+    status(cwd: string, relPath: string): Promise<LspStatus>
+    /** hover info (markdown) for the symbol at an LSP (0-based) position */
+    hover(cwd: string, relPath: string, pos: LspPos): Promise<LspHoverResult | null>
+    /** definition target(s) for the symbol at an LSP (0-based) position */
+    definition(cwd: string, relPath: string, pos: LspPos): Promise<LspLocation[]>
+    /** semantic highlighting tokens for a document — null when unsupported */
+    semanticTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null>
+    /** download this file's native language server (C#/C++) — user-initiated */
+    install(cwd: string, relPath: string): Promise<{ ok: boolean; error?: string }>
+    /** subscribe to streamed server-download progress (returns an unsubscribe fn) */
+    onInstallProgress(cb: (p: LspInstallProgress) => void): () => void
+    /** list every known language server + provisioning state (설정 ▸ 코드 분석) */
+    servers(): Promise<LspServerInfo[]>
+    /** download a server by id (settings tab) */
+    installServer(id: string): Promise<{ ok: boolean; error?: string }>
+    /** stop every running instance of a downloaded server and delete it from disk */
+    uninstallServer(id: string): Promise<{ ok: boolean; error?: string }>
+  }
+  win: {
+    minimize(): Promise<void>
+    toggleMaximize(): Promise<boolean>
+    close(): Promise<void>
+    isMaximized(): Promise<boolean>
+    getBounds(): Promise<WindowBounds>
+    setBounds(bounds: WindowBounds): Promise<void>
+    /** begin/end a manual title-bar drag (frameless window moved from the main process) */
+    dragStart(): Promise<void>
+    dragEnd(): Promise<void>
+    /** begin/end a manual edge resize — the main process samples the live cursor so
+     *  it never feeds back on itself the way renderer pointer events can */
+    resizeStart(edge: ResizeEdge): Promise<void>
+    resizeEnd(): Promise<void>
+  }
+  /** Claude Code engine (SDK) version management. */
+  engine: {
+    listAvailable(): Promise<{ latest: string | null; versions: EngineVersionEntry[] }>
+    state(): Promise<EngineVersionState>
+    install(version: string): Promise<{ ok: boolean; error?: string }>
+    uninstall(version: string): Promise<void>
+    setActive(version: string | null): Promise<void>
+    onInstallProgress(cb: (p: EngineInstallProgress) => void): () => void
+  }
+  /** Agent skills (SKILL.md). Listed by scope; toggled on/off from Settings. */
+  skill: {
+    /** enumerate global (~/.claude) + project (.claude/skills for `cwd`) skills */
+    list(cwd: string): Promise<SkillInfo[]>
+    /** turn a skill on/off by name — applied to subsequent runs by the engine */
+    setEnabled(name: string, enabled: boolean): Promise<void>
+  }
+  /** MCP servers. Listed by scope (user/project/local); toggled on/off from Settings. */
+  mcp: {
+    /** enumerate user (~/.claude.json) + project (.mcp.json) + local servers for `cwd` */
+    list(cwd: string): Promise<McpServerInfo[]>
+    /** turn an MCP server on/off by name — applied to subsequent runs by the engine */
+    setEnabled(name: string, enabled: boolean): Promise<void>
+  }
+  /** "/ask" — an independent throwaway conversation on its own engine instance, so it
+   *  never cancels or mixes into the main chat. Same payload shapes, separate channel. */
+  ask: {
+    run(req: RunRequest): Promise<string>
+    cancel(): Promise<void>
+    respondPermission(res: PermissionResponse): Promise<void>
+    respondQuestion(res: QuestionResponse): Promise<void>
+    /** subscribe to the /ask engine's streaming events (returns an unsubscribe fn) */
+    onEvent(cb: (event: EngineEvent) => void): () => void
+  }
+  /** Multi-agent — a pool of independent engines, one per on-screen panel, all running
+   *  in parallel. Each command names its panel; events arrive on a shared channel and
+   *  are delivered per-panel by `onEvent(panelId, …)`. */
+  multi: {
+    run(req: MultiRunRequest): Promise<string>
+    cancel(panelId: string): Promise<void>
+    respondPermission(res: MultiPermissionResponse): Promise<void>
+    respondQuestion(res: MultiQuestionResponse): Promise<void>
+    /** stop a panel's run and release its engine (the panel was removed) */
+    dispose(panelId: string): Promise<void>
+    /** load the persisted multi-agent workspace blob (layout + panel snapshots), or null */
+    getState(): Promise<unknown>
+    /** persist the multi-agent workspace blob so it survives a restart */
+    saveState(data: unknown): Promise<void>
+    /** subscribe to one panel's streaming engine events (returns an unsubscribe fn) */
+    onEvent(panelId: string, cb: (event: EngineEvent) => void): () => void
+  }
+  /** App metadata + auto-update (electron-updater, GitHub Releases). */
+  app: {
+    /** the running app version (package.json `version`) */
+    getVersion(): Promise<string>
+    /** the folder passed via "AgentCodeGUI로 열기" at launch — returned once, then cleared */
+    getInitialDirectory(): Promise<string | null>
+    /** the current auto-update state + log — used to seed the UI on mount (no missed events) */
+    getUpdateStatus(): Promise<UpdateStatus>
+    /** manually trigger an update check */
+    checkForUpdate(): Promise<void>
+    /** quit and install an already-downloaded update */
+    installUpdate(): Promise<void>
+    /** a folder opened via "AgentCodeGUI로 열기" while the app was already running */
+    onOpenDirectory(cb: (dir: string) => void): () => void
+    /** subscribe to the full auto-update state on every change (returns an unsubscribe fn) */
+    onUpdateEvent(cb: (status: UpdateStatus) => void): () => void
+  }
+  /** Subscribe to streaming engine events. Returns an unsubscribe fn. */
+  onEngineEvent(cb: (event: EngineEvent) => void): () => void
+  onWinState(cb: (state: WindowState) => void): () => void
+}
