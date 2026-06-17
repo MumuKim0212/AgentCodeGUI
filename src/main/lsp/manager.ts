@@ -6,7 +6,8 @@ import fsp from 'node:fs/promises'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { StdioRpc } from './jsonrpc'
 import { DOWNLOADS, install, installState, installedBin, uninstall } from './install'
-import { ensureUeClangDb } from './ue'
+import { ensureUeClangDb, ueDbDir, ueRoot } from './ue'
+import { getCached, setCached, gcDeadBuckets } from './semcache'
 import { APP_HOME } from '../engine/versions'
 import type {
   LspHoverResult,
@@ -43,8 +44,10 @@ interface ServerDef {
   kind: 'bundled' | 'download'
   exts: Record<string, string> // extension → LSP languageId
   requires?: string // external prerequisite, shown in settings (e.g. .NET SDK)
-  /** how to launch the server, or null when its binary/module is missing */
-  command(): SpawnPlan | null
+  /** how to launch the server for a given project root, or null when its
+   *  binary/module is missing. `root` lets clangd point at the project's
+   *  out-of-tree compile DB; bundled servers ignore it. */
+  command(root: string): SpawnPlan | null
   initializationOptions?(): unknown
   /** 파일별 서버 루트 — 기본은 열린 프로젝트(cwd). C#은 가장 가까운 .csproj 폴더로
    *  좁힌다: UE 같은 모노레포 루트의 무관한 sln(엔진 자동화 프로젝트 수십 개)을
@@ -203,9 +206,20 @@ const SERVERS: ServerDef[] = [
     // .h defaults to C++ — the common case in the wild (and clangd mostly
     // decides from compile flags / content anyway)
     exts: { c: 'c', h: 'cpp', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hxx: 'cpp', hh: 'cpp' },
-    command: () => {
+    command: (root) => {
       const bin = installedBin('cpp')
-      return bin ? { cmd: bin, args: ['--background-index'] } : null
+      if (!bin) return null
+      const args = ['--background-index']
+      // UE 프로젝트는 compile_commands.json을 앱 홈(ueDbDir)에 만들어 둔다 — 거기에
+      // 있으면 clangd가 그 폴더를 보게 한다. 그러면 clangd의 디스크 인덱스(.cache/clangd)도
+      // 이 폴더 기준으로 쌓여 사용자의 언리얼 폴더가 깨끗하게 유지된다. (DB가 없는 일반
+      // C++ 프로젝트는 플래그 없이 — clangd가 소스 트리에서 알아서 찾는다)
+      // root가 하위폴더라도 ueRoot로 .uproject 조상을 찾아 같은 ue-db를 가리킨다.
+      const ur = root ? ueRoot(root) : null
+      if (ur && fs.existsSync(path.join(ueDbDir(ur), 'compile_commands.json'))) {
+        args.push(`--compile-commands-dir=${ueDbDir(ur)}`)
+      }
+      return { cmd: bin, args }
     }
   }
 ]
@@ -276,15 +290,19 @@ class LspManager {
     return s.status
   }
 
-  // 프로젝트 루트당 한 번만 — generate가 끝나 'generated'면 그 루트의 clangd 재시작
+  // clangd 서버(키=cwd)당 한 번만 — generate가 끝나 'generated'면 그 서버를 재시작.
+  // DB는 .uproject 조상(ueRoot)에 대해 만들지만, 재시작 대상은 cwd로 띄운 서버다
+  // (하위폴더를 열면 ueRoot≠cwd이므로 둘을 구분해야 한다).
   private ueKicked = new Set<string>()
-  private maybeUeDb(root: string): void {
-    if (process.platform !== 'win32' || !root) return
-    const key = path.resolve(root).toLowerCase()
+  private maybeUeDb(cwd: string): void {
+    if (process.platform !== 'win32' || !cwd) return
+    const ur = ueRoot(cwd)
+    if (!ur) return
+    const key = path.resolve(cwd).toLowerCase()
     if (this.ueKicked.has(key)) return
     this.ueKicked.add(key)
-    void ensureUeClangDb(root).then((r) => {
-      if (r === 'generated') this.restart('cpp', root)
+    void ensureUeClangDb(ur).then((r) => {
+      if (r === 'generated') this.restart('cpp', cwd)
     })
   }
 
@@ -318,6 +336,8 @@ class LspManager {
    * modifierBits) quintuples; null when this file's server doesn't do semantic tokens.
    */
   async semanticTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
     const ctx = await this.prep(cwd, relPath)
     if (!ctx || !ctx.semLegend) return null
     // a failed/timed-out request reports "supported but empty" — null is reserved
@@ -342,7 +362,76 @@ class LspManager {
       char = dLine === 0 ? char + raw[i + 1] : raw[i + 1]
       data.push(line, char, raw[i + 2], raw[i + 3], raw[i + 4])
     }
-    return { data, types: ctx.semLegend.types, mods: ctx.semLegend.mods }
+    const out = { data, types: ctx.semLegend.types, mods: ctx.semLegend.mods }
+    // 디스크 캐시에 떨궈 다음 실행 때 서버를 안 기다리고 즉시 색칠할 수 있게 한다
+    if (abs && def) {
+      void fsp
+        .readFile(abs, 'utf8')
+        .then((content) => setCached(cwd, def.id, abs, content, out))
+        .catch(() => {})
+    }
+    return out
+  }
+
+  /**
+   * 디스크 캐시에 저장된 시맨틱 토큰 — 서버를 띄우지 않고 즉시 돌려준다.
+   * 뷰어가 파일을 열자마자 호출해 "0ms 색칠"을 하고, 그 뒤 semanticTokens()로
+   * 라이브 토큰을 받아 다르면 갱신한다. 캐시가 없으면 null.
+   */
+  async cachedTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return null
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
+    let content: string
+    try {
+      content = await fsp.readFile(abs, 'utf8')
+    } catch {
+      return null
+    }
+    return getCached(cwd, def.id, abs, content)
+  }
+
+  /**
+   * 프로젝트를 열 때 호출 — 첫 파일을 보기 전에 미리 워밍한다. UE면 compile DB를
+   * 먼저 생성해 두고, 그 프로젝트의 주력 언어 서버를 미리 띄워 둔다(특히 C#/OmniSharp는
+   * 솔루션 로드가 분 단위라 미리 데워 두면 체감 지연이 사용자 시야 밖으로 빠진다).
+   */
+  prewarm(cwd: string): void {
+    if (!cwd) return
+    const root = path.resolve(cwd)
+    void gcDeadBuckets() // 원본 폴더가 사라진 프로젝트의 캐시를 회수
+    this.maybeUeDb(root)
+    const def = this.detectProjectServer(root)
+    if (def && def.command(root)) void this.ensure(def, root)
+  }
+
+  /** cwd의 주력 언어 서버를 값싼 파일 시그널로 추정 — 못 찾으면 null. */
+  private detectProjectServer(root: string): ServerDef | null {
+    let names: string[] = []
+    try {
+      names = fs.readdirSync(root)
+    } catch {
+      return null
+    }
+    const lower = names.map((n) => n.toLowerCase())
+    const has = (re: RegExp): boolean => lower.some((n) => re.test(n))
+    let id: string | null = null
+    // .uproject가 cwd에 없어도 조상에 있으면 UE 하위폴더를 연 것 — cpp로 본다
+    if (has(/\.uproject$/) || ueRoot(root)) id = 'cpp'
+    else if (has(/\.sln$/) || has(/\.csproj$/)) id = 'cs'
+    else if (has(/^tsconfig.*\.json$/) || has(/^package\.json$/)) id = 'ts'
+    else if (has(/^pyproject\.toml$/) || has(/^requirements\.txt$/) || has(/^setup\.py$/)) id = 'py'
+    if (!id) return null
+    const def = SERVERS.find((s) => s.id === id) ?? null
+    if (!def) return null
+    // 설치형(C#/C++)은 아직 안 받았으면 미리 띄울 수 없다 — 사용자가 첫 파일에서 설치
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    // rootFor를 쓰는 서버(C#)는 실제 루트가 파일 위치에 따라 cwd가 아닐 수 있다 —
+    // cwd로 미리 띄우면 정작 파일이 쓰는 인스턴스와 키가 어긋나 서버가 두 번 뜬다.
+    // 그런 서버는 prewarm하지 않는다(C#은 토큰 캐시로 즉시 페인트되니 충분).
+    if (def.rootFor) return null
+    return def
   }
 
   /** Every known language server + its provisioning state, for the settings tab. */
@@ -353,7 +442,8 @@ class LspManager {
         .join(' ')
       const base = { id: def.id, label: def.label, langs: def.langs, exts, requires: def.requires }
       if (def.kind === 'bundled') {
-        return { ...base, kind: 'bundled' as const, state: def.command() ? ('bundled' as const) : ('none' as const) }
+        // bundled 서버는 root와 무관하게 모듈 존재 여부만 본다
+        return { ...base, kind: 'bundled' as const, state: def.command('') ? ('bundled' as const) : ('none' as const) }
       }
       return { ...base, kind: 'download' as const, state: installState(def.id) }
     })
@@ -463,7 +553,7 @@ class LspManager {
       this.servers.delete(key) // cooled down — try a fresh spawn below
     }
 
-    const plan = def.command()
+    const plan = def.command(path.resolve(root))
     if (!plan) return null
 
     let child: ChildProcess

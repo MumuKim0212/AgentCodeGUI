@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -11,6 +12,12 @@ import { APP_HOME } from '../engine/versions'
  * 있어야 엔진 심볼(FString 등)을 해석한다 — Rider는 자체 인덱서라 필요 없지만
  * clangd에겐 이 파일이 다리다. 프로젝트 루트에 .uproject가 보이면
  * UnrealBuildTool의 GenerateClangDatabase 모드로 만들어 준다(수 초).
+ *
+ * 출력 위치: 예전엔 프로젝트 루트에 떨궜지만, 사용자의 언리얼 폴더에 우리가
+ * 만든 흔적(compile_commands.json + clangd가 옆에 쌓는 .cache/clangd 인덱스)을
+ * 남기지 않으려고 이제 앱 홈(ueDbDir)에 둔다. clangd엔 --compile-commands-dir로
+ * 그 폴더를 가리켜 주고(manager.ts), clangd의 디스크 인덱스도 CDB 폴더 기준이라
+ * 함께 앱 홈에 쌓인다 — 프로젝트는 깨끗하게 유지된다.
  *
  * 컴파일러: UBT의 이 모드는 기본값이 -Compiler=Clang인데, Windows에 LLVM
  * 툴체인이 없는 게 보통이라 그대로는 "Clang x64 must be installed"로 즉사한다.
@@ -26,6 +33,32 @@ import { APP_HOME } from '../engine/versions'
  * ============================================================ */
 
 export type UeDbResult = 'none' | 'fresh' | 'generated'
+
+/** dir에서 위로 올라가며 .uproject가 있는 첫 폴더(= UE 프로젝트 루트) — 없으면 null.
+ *  하위폴더(예: Plugins/.../Source)를 열어도 프로젝트 루트를 찾아, DB 생성·clangd
+ *  플래그가 항상 같은 ue-db로 라우팅되게 한다(안 그러면 clangd가 트리를 오염시킨다). */
+export function ueRoot(dir: string): string | null {
+  let d = path.resolve(dir)
+  for (let i = 0; i < 16; i++) {
+    try {
+      if (fs.readdirSync(d).some((n) => n.toLowerCase().endsWith('.uproject'))) return d
+    } catch {
+      /* unreadable — keep walking up */
+    }
+    const parent = path.dirname(d)
+    if (parent === d) break
+    d = parent
+  }
+  return null
+}
+
+/** 이 프로젝트의 compile_commands.json(+ clangd 인덱스 캐시)을 둘 앱 홈 폴더.
+ *  프로젝트 루트 절대경로 해시로 키를 잡아 프로젝트끼리 섞이지 않게 한다. */
+export function ueDbDir(root: string): string {
+  const abs = path.resolve(root)
+  const hash = crypto.createHash('sha1').update(abs.toLowerCase()).digest('hex').slice(0, 8)
+  return path.join(APP_HOME, 'lsp', 'ue-db', `${path.basename(abs) || 'root'}-${hash}`)
+}
 
 // 프로젝트 루트당 세션에 한 번만 시도 — 실패해도 재시도 루프를 만들지 않는다
 const attempts = new Map<string, Promise<UeDbResult>>()
@@ -53,9 +86,11 @@ async function generate(root: string): Promise<UeDbResult> {
   if (!uprojName) return 'none'
   const uproject = path.join(root, uprojName)
 
-  const db = path.join(root, 'compile_commands.json')
+  const dbDir = ueDbDir(root)
+  const db = path.join(dbDir, 'compile_commands.json')
   const dbStat = await fsp.stat(db).catch(() => null)
   if (dbStat && dbStat.mtimeMs >= (await newestStructureMtime(root, uproject))) return 'fresh'
+  await fsp.mkdir(dbDir, { recursive: true })
 
   const target = await editorTarget(root)
   if (!target) return 'none'
@@ -69,7 +104,7 @@ async function generate(root: string): Promise<UeDbResult> {
   ].find((p) => fs.existsSync(p))
   if (!ubt) return 'none'
 
-  const base = ['-mode=GenerateClangDatabase', `-project=${uproject}`, target, 'Win64', 'Development', `-OutputDir=${root}`]
+  const base = ['-mode=GenerateClangDatabase', `-project=${uproject}`, target, 'Win64', 'Development', `-OutputDir=${dbDir}`]
   // ''(기본 = Clang, 있으면 최상) → MSVC 폴백. 모르는 enum 값(구버전 엔진의
   // VisualStudio2026 등)은 인자 파싱에서 즉시 실패해 다음 후보로 넘어간다.
   for (const compiler of ['', 'VisualStudio2026', 'VisualStudio2022']) {

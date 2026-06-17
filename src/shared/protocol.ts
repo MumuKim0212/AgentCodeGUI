@@ -452,6 +452,8 @@ export const IPC = {
   lspHover: 'lsp:hover', // symbol hover (markdown) at a position
   lspDefinition: 'lsp:definition', // definition target(s) for the symbol at a position
   lspSemanticTokens: 'lsp:semantic-tokens', // semantic highlighting tokens for a document
+  lspCachedTokens: 'lsp:cached-tokens', // disk-cached tokens for instant paint (no server spawn)
+  lspPrewarm: 'lsp:prewarm', // warm up a project's server/compile-DB before the first file open
   lspInstall: 'lsp:install', // download a native language server (C#/C++) on user request
   lspServers: 'lsp:servers', // list every known language server + provisioning state (settings)
   lspInstallServer: 'lsp:install-server', // download a server by id (settings)

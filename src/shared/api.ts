@@ -103,6 +103,10 @@ export interface WindowApi {
     definition(cwd: string, relPath: string, pos: LspPos): Promise<LspLocation[]>
     /** semantic highlighting tokens for a document — null when unsupported */
     semanticTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null>
+    /** disk-cached tokens for instant paint on open (no server spawn) — null when none */
+    cachedTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null>
+    /** warm a project's server / compile-DB before the first file is opened */
+    prewarm(cwd: string): Promise<void>
     /** download this file's native language server (C#/C++) — user-initiated */
     install(cwd: string, relPath: string): Promise<{ ok: boolean; error?: string }>
     /** subscribe to streamed server-download progress (returns an unsubscribe fn) */

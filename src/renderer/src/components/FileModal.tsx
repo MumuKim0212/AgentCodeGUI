@@ -1631,12 +1631,32 @@ export function FileModal({
     setPollNonce((n) => n + 1) // pick up the 'installing' state right away
   }, [cwd, effPath])
 
+  // instant paint: on open, ask the disk cache for this file's last-known tokens
+  // (keyed by content hash — no server spawn) and paint immediately. The live
+  // fetch below upgrades them once the server answers. This is what makes a
+  // relaunch feel instant instead of waiting out the server warm-up every time.
+  // 커밋 시점 내용(ovContent)은 디스크와 달라 LSP 좌표가 거짓이 되므로 캐시도 끈다.
+  useEffect(() => {
+    setSem(null)
+    if (!effPath || isImg || ovContent != null || res?.content == null) return
+    let alive = true
+    window.api.lsp
+      .cachedTokens(cwd, effPath)
+      .then((t) => {
+        if (alive && t && t.data.length) setSem(t)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [effPath, cwd, res, isImg, ovContent])
+
   // semantic highlighting: ask once the server is ready. Right after the server
   // turns ready it may still be settling (OmniSharp keeps associating documents
   // for a while after the solution loads) and answer with nothing — keep retrying
   // for a generous window. Re-asks when the viewed file (or its content) changes.
+  // Doesn't reset sem — the cache paint above stays visible until live arrives.
   useEffect(() => {
-    setSem(null)
     if (!effPath || lspStatus !== 'ready' || res?.content == null) return
     let alive = true
     let tries = 0

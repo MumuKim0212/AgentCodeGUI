@@ -391,6 +391,12 @@ function MainApp({ user }: { user: AppUser }) {
   // root가 바뀔 때마다 탐색기가 보고하므로 cwd가 바뀌어도 곧 따라온다.
   const mentionBase = explorerFolder || cwd
 
+  // 프로젝트가 정해지면 분석 서버/컴파일 DB를 미리 데워 둔다 — 첫 파일을 열 때
+  // 서버 워밍을 기다리지 않도록(특히 C#/UE). 폴더가 바뀔 때마다 한 번.
+  useEffect(() => {
+    if (cwd) window.api.lsp.prewarm(cwd).catch(() => {})
+  }, [cwd])
+
   const activeChat = chats.find((c) => c.id === activeChatId)
   // a fresh chat with no messages and no title — it never appears in the recent
   // list; the chat area shows the welcome screen instead
