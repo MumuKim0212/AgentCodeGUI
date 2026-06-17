@@ -6,6 +6,7 @@ import { CmEditor, type CmEditorHandle } from './CmEditor'
 import { highlightCode, highlightToLines } from '../lib/highlight'
 import { SEM_CLASS, riderSemClass, type SemSpan, type StructOv } from '../lib/semTokens'
 import { useCppStructOv } from '../lib/cppStruct'
+import { diffMarksOf, type DiffMarks } from '../lib/cmDiff'
 import { isImagePath, imageSrc } from '../lib/images'
 import { FileBadge, fileTypeFor, paletteClassFor } from './fileType'
 import {
@@ -13,6 +14,7 @@ import {
   IconCheck,
   IconChevDown,
   IconChevLeft,
+  IconChevRight,
   IconClose,
   IconCopy,
   IconMax,
@@ -523,55 +525,7 @@ function decorateLine(html: string, spans: SemSpan[]): string {
   return root.innerHTML
 }
 
-// ── changed-file decorations (diff painted onto the live file) ───────────────
-// The agent's cumulative whole-file diff (run baseline → current) is mapped onto the
-// real file the viewer renders: which current-file lines were added, and the
-// boundaries where lines were deleted. Painting marks over the live content (instead
-// of a separate diff-only modal) keeps LSP hover/definition coordinates truthful, so
-// a changed file gets the full code-viewer feature set.
-interface DiffMarks {
-  added: Set<number> // 1-based current-file line numbers introduced by this run
-  delAfter: Set<number> // a deletion sits between line n and n+1 (0 = before line 1)
-  // 삭제된 줄의 원문 — 경계(새 파일 기준 줄 번호) 자리에 빨간 고스트 줄로 렌더된다.
-  // n은 옛(old-side) 줄 번호: 사라진 코드가 원래 몇 번째 줄이었는지 거터에 보여준다.
-  ghosts: Map<number, { n: number; text: string }[]>
-  blocks: { start: number; end: number; type: 'add' | 'del' | 'mix' }[] // overview-ruler runs
-  newCount: number // new-side line total — marks only apply while it matches the file on disk
-}
-
-function diffMarksOf(diff: FileDiff): DiffMarks {
-  const added = new Set<number>()
-  const delAfter = new Set<number>()
-  const ghosts = new Map<number, { n: number; text: string }[]>()
-  const blocks: DiffMarks['blocks'] = []
-  const mark = (line: number, type: 'add' | 'del'): void => {
-    const last = blocks[blocks.length - 1]
-    if (last && line - last.end <= 1) {
-      last.end = Math.max(last.end, line)
-      if (last.type !== type) last.type = 'mix'
-    } else blocks.push({ start: line, end: line, type })
-  }
-  let ln = 0
-  let oldLn = 0
-  for (const l of diff.lines) {
-    if (l.t === 'hunk') continue
-    if (l.t === 'del') {
-      oldLn++
-      delAfter.add(ln)
-      let arr = ghosts.get(ln)
-      if (!arr) ghosts.set(ln, (arr = []))
-      arr.push({ n: oldLn, text: l.text })
-      mark(ln + 1, 'del') // ruler mark above line ln+1 (below the last line when at EOF)
-      continue
-    }
-    ln++
-    if (l.t === 'add') {
-      added.add(ln)
-      mark(ln, 'add')
-    } else oldLn++
-  }
-  return { added, delAfter, ghosts, blocks, newCount: ln }
-}
+// DiffMarks / diffMarksOf moved to ../lib/cmDiff (shared with the CM editor). Imported above.
 
 // where the mouse is, in LSP document coordinates (0-based line/character).
 // caretRangeFromPoint gives the text node + offset under the cursor; the character
@@ -637,7 +591,9 @@ function SelectionAskBar({
       // 본문(코드/마크다운) 안에서 시작하고 끝난 선택만 — 헤더의 경로 드래그 등은 제외
       const inBody = (n: Node | null): boolean => {
         const el = n && (n.nodeType === Node.ELEMENT_NODE ? (n as HTMLElement) : n.parentElement)
-        return !!el?.closest?.('.fv-code, .fv-md') && root.contains(n)
+        // .cm-content = CodeMirror 편집기 본문도 본문으로 인정 (줄 번호는 data-ln이 없어
+        // null로 — 선택 텍스트만 질문에 실린다)
+        return !!el?.closest?.('.fv-code, .fv-md, .cm-content') && root.contains(n)
       }
       if (!inBody(sel.anchorNode) || !inBody(sel.focusNode)) return null
       const range = sel.getRangeAt(0)
@@ -651,27 +607,23 @@ function SelectionAskBar({
       if (barRef.current?.contains(e.target as Node)) return
       setPos(null)
     }
-    const onMouseUp = (e: MouseEvent): void => {
+    // 드래그(선택)만으론 안 띄우고, 선택 위에서 우클릭했을 때만 툴바를 연다(사용자 요청).
+    // 본문 선택이 없으면 막지 않고 기본 동작에 맡긴다.
+    const onContextMenu = (e: MouseEvent): void => {
       if (barRef.current?.contains(e.target as Node)) return
-      // defer a tick so the browser has finalized the selection
-      setTimeout(() => {
-        const r = read()
-        if (!r) {
-          setPos(null)
-          return
-        }
-        // 마우스를 뗀 자리 옆에 띄운다 (좌표가 없는 합성 이벤트는 선택 끝점으로 대체)
-        setPos({
-          x: e.clientX || r.rect.right,
-          y: e.clientY || r.rect.bottom,
-          rectTop: r.rect.top,
-          rectLeft: r.rect.left,
-          text: r.text,
-          from: r.from,
-          to: r.to
-        })
-        setCopied(false)
-      }, 0)
+      const r = read()
+      if (!r) return
+      e.preventDefault()
+      setPos({
+        x: e.clientX || r.rect.right,
+        y: e.clientY || r.rect.bottom,
+        rectTop: r.rect.top,
+        rectLeft: r.rect.left,
+        text: r.text,
+        from: r.from,
+        to: r.to
+      })
+      setCopied(false)
     }
     // 스크롤은 캡처로 받아 내부 스크롤 페인(.fv-code 등)의 이동도 따라가게 한다 —
     // 선택 rect가 움직인 변위만큼 마우스 앵커도 함께 이동
@@ -716,13 +668,13 @@ function SelectionAskBar({
       if (!sel || sel.isCollapsed) setPos(null)
     }
     document.addEventListener('mousedown', onMouseDown)
-    document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('contextmenu', onContextMenu)
     root.addEventListener('scroll', onScroll, true)
     window.addEventListener('keydown', onKey)
     document.addEventListener('selectionchange', onSelChange)
     return () => {
       document.removeEventListener('mousedown', onMouseDown)
-      document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('contextmenu', onContextMenu)
       root.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('keydown', onKey)
       document.removeEventListener('selectionchange', onSelChange)
@@ -1485,7 +1437,8 @@ interface NavEntry {
 }
 interface ViewState {
   root: string | null // the path prop this state belongs to
-  stack: NavEntry[]
+  stack: NavEntry[] // 뒤로 트레일(정의 점프로 떠나온 파일들)
+  fwd: NavEntry[] // 앞으로 트레일(뒤로 가며 빠져나온 파일들 — 새 점프 시 비워진다)
   jump: { line: number; tick: number } | null
 }
 
@@ -1525,17 +1478,17 @@ export function FileModal({
   const [instPct, setInstPct] = useState<number | null>(null)
   const [instErr, setInstErr] = useState<string | null>(null)
   const [pollNonce, setPollNonce] = useState(0)
-  const [vs, setVs] = useState<ViewState>({ root: path, stack: [], jump: null })
+  const [vs, setVs] = useState<ViewState>({ root: path, stack: [], fwd: [], jump: null })
   // an SVG can be viewed both ways — as the rendered image (default) or as markup
   const [svgCode, setSvgCode] = useState(false)
   // a changed markdown file opens as marked-up source (so the diff is visible);
   // this flips it to the rendered document
   const [mdPreview, setMdPreview] = useState(false)
-  // PoC: swap the read-only <pre> viewer for the CodeMirror editor (실험 토글). Kept
-  // across file switches so the two engines can be A/B compared while browsing.
-  const [cmEngine, setCmEngine] = useState(false)
+  // 편집 가능한 코드 파일은 CodeMirror 편집기로 연다(아래 cmEligible). 마크다운·이미지·
+  // git 스냅샷·잘린 파일은 읽기 전용 CodeView 유지.
   const [cmDirty, setCmDirty] = useState(false) // CM 버퍼에 미저장 변경이 있는가
   const [cmSaved, setCmSaved] = useState(false) // 방금 저장됨 — 잠깐 '저장됨' 표시
+  const [cmMode, setCmMode] = useState<'read' | 'edit'>('read') // 변경 파일은 읽기(diff)로 열고 '편집' 눌러 수정
   const cmRef = useRef<CmEditorHandle>(null)
   // 정의 이동 시 떠나는 파일의 캐럿 위치를 기억 → 뒤로가기로 돌아오면 그 자리로 복원 (CM)
   const posMap = useRef(new Map<string, number>())
@@ -1547,7 +1500,7 @@ export function FileModal({
   // a freshly opened file discards any definition-jump trail from the previous one
   // (render-time state sync — avoids one frame of the stale document)
   if (vs.root !== path) {
-    setVs({ root: path, stack: [], jump: null })
+    setVs({ root: path, stack: [], fwd: [], jump: null })
     if (svgCode) setSvgCode(false)
     if (mdPreview) setMdPreview(false)
     if (findOpen) setFindOpen(false)
@@ -1555,6 +1508,10 @@ export function FileModal({
     if (askText) setAskText('')
     if (cmDirty) setCmDirty(false)
     if (cmSaved) setCmSaved(false)
+    // 네비게이션 세션 종료(닫기/다른 파일 열기) — 저장된 캐럿 위치를 비운다. 안 그러면
+    // 재오픈 때 복원 effect가 다시 돌며 이전 위치를 또 깜빡인다. (세션 내 뒤로가기는
+    // path가 안 바뀌어 여기 안 걸리므로 그대로 복원·깜빡임 유지)
+    posMap.current.clear()
   }
   const effPath = vs.stack.length ? vs.stack[vs.stack.length - 1].path : path
   const isSvg = !!effPath && /\.svg$/i.test(effPath)
@@ -1567,13 +1524,18 @@ export function FileModal({
   // Git 카드에서 온 일회성 diff(ov.diff)가 있으면 세션 diff 대신 그걸 쓴다.
   const diff = ov ? ov.diff : (effPath && diffs?.[effPath.replace(/\\/g, '/')]) || null
   const marks = useMemo(() => (diff ? diffMarksOf(diff) : null), [diff])
+  // 파일이 바뀔 때마다 항상 읽기 모드로 연다(파일 종류 무관 일관). 편집은 Ctrl+E/토글로.
+  useEffect(() => {
+    setCmMode('read')
+  }, [effPath])
   const isMdFile = !!effPath && fileTypeFor(effPath).lang === 'markdown'
   // CM PoC applies to non-markdown code files only (markdown keeps its render/source
   // toggle for now). Computed here so the header toggle and the body swap agree.
   const fLang = effPath ? fileTypeFor(effPath).lang : ''
-  // CM editing writes to the live file, so it's offered only for real on-disk files —
-  // not git-snapshot overrides (would overwrite the working copy with old content).
-  const cmEligible = !isImg && !isMdFile && res?.content != null && !ov
+  // CM editing writes to the live file, so it's used only for real, fully-loaded on-disk
+  // files — not git-snapshot overrides (would overwrite the working copy with old content)
+  // and not truncated previews (saving would drop everything past the read cap).
+  const cmEligible = !isImg && !isMdFile && res != null && res.content != null && !res.truncated && !ov
   // C++ struct 연보라 보정 — 엔진(뷰어/CM) 무관하게 한 번 계산해 양쪽에 내려준다
   const structOv = useCppStructOv(sem, fLang, res?.content ?? '', cwd, effPath ?? '')
 
@@ -1705,6 +1667,7 @@ export function FileModal({
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return
       if (document.querySelector('.sel-bar')) return // 선택 툴바가 먼저 접힌다
+      if (document.querySelector('.cm-host .cm-find')) return // CM 검색 바가 열려 있으면 그게 먼저 닫힌다
       if (askOpenRef.current) {
         setAsk(null)
         return
@@ -1719,52 +1682,82 @@ export function FileModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [path, requestClose])
 
-  // Ctrl/⌘+F → 파일 내 검색 (카드가 열려 있는 동안은 탐색기 검색보다 우선)
+  // Ctrl/⌘+F → 파일 내 검색 (카드가 열려 있는 동안은 탐색기 검색보다 우선).
+  // CM 편집기가 켜진 코드 파일에선 CM 자체 검색(가상화 대응)에 양보한다.
   useEffect(() => {
     if (!path) return
     const onKey = (e: KeyboardEvent): void => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f') {
-        e.preventDefault()
-        setFindOpen(true)
-      }
+      if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f')) return
+      e.preventDefault()
+      // CM 편집기 코드 파일은 CM 검색 패널(가상화 대응)을, 그 외엔 기존 FindBar를 연다
+      if (cmEligible) cmRef.current?.openSearch()
+      else setFindOpen(true)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [path])
+  }, [path, cmEligible])
+
+  // Ctrl/⌘+E → 읽기 ↔ 편집 모드 토글. 편집 가능한 코드 파일이면 어디서나(토글 버튼과 동일 조건).
+  // capture로 잡아 CM 키맵보다 먼저 처리하고, 편집 모드 진입 시 포커스는 CmEditor가 잡는다.
+  useEffect(() => {
+    if (!path || !cmEligible) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'e')) return
+      e.preventDefault()
+      e.stopPropagation()
+      setCmMode((m) => (m === 'read' ? 'edit' : 'read'))
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [path, cmEligible])
 
   // 질문 패널이 열리면 바로 입력에 포커스
   useEffect(() => {
     if (ask) askInputRef.current?.focus()
   }, [ask])
 
-  // 마우스 옆 버튼(뒤로, X1) = 정의 점프 트레일 한 단계 되돌리기 — 브라우저/IDE 관례.
-  // 헤더의 ← 버튼과 같은 동작이고, 더 갈 곳이 없으면(원래 파일) 뷰어를 닫는다.
+  // 정의 점프 트레일을 떠나기 전에 현재 파일 캐럿을 기억 — 뒤로/앞으로 돌아오면 그 자리로 복원
+  const effPathRef = useRef(effPath)
+  effPathRef.current = effPath
+  const rememberCaret = useCallback((): void => {
+    const leaving = cmRef.current?.getCaret()
+    if (leaving != null && effPathRef.current) posMap.current.set(canonPath(effPathRef.current, cwd), leaving)
+  }, [cwd])
+  // 뒤로 = 스택 한 단계 빼서 앞으로(fwd) 스택에 쌓기 / 앞으로 = 그 반대. 둘 다 캐럿 복원용으로 저장.
+  const goBack = useCallback((): void => {
+    rememberCaret()
+    setVs((v) => (v.stack.length ? { ...v, stack: v.stack.slice(0, -1), fwd: [...v.fwd, v.stack[v.stack.length - 1]], jump: null } : v))
+  }, [rememberCaret])
+  const goForward = useCallback((): void => {
+    rememberCaret()
+    setVs((v) => (v.fwd.length ? { ...v, stack: [...v.stack, v.fwd[v.fwd.length - 1]], fwd: v.fwd.slice(0, -1), jump: null } : v))
+  }, [rememberCaret])
+
+  // 마우스 옆 버튼: 뒤로(X1=button 3) / 앞으로(X2=button 4) — 브라우저·IDE 관례. 더 갈 곳이
+  // 없으면 아무것도 안 한다(실수로 코드창 닫히는 게 싫다는 피드백 — 닫기는 Esc·X·Ctrl+W로만).
   useEffect(() => {
     if (!path) return
-    const hasTrail = vs.stack.length > 0
     const onUp = (e: MouseEvent): void => {
-      if (e.button !== 3) return
-      e.preventDefault()
-      // 더 갈 곳이 있으면 한 단계 뒤로. 없으면 아무것도 안 한다(예전엔 뷰어를 닫았지만,
-      // 실수로 코드창이 꺼지는 게 싫다는 피드백 — 닫기는 Esc·X·Ctrl+W로만)
-      if (hasTrail) setVs((v) => ({ ...v, stack: v.stack.slice(0, -1), jump: null }))
+      if (e.button === 3) {
+        e.preventDefault()
+        goBack()
+      } else if (e.button === 4) {
+        e.preventDefault()
+        goForward()
+      }
     }
     window.addEventListener('mouseup', onUp)
     return () => window.removeEventListener('mouseup', onUp)
-  }, [path, vs.stack.length])
+  }, [path, goBack, goForward])
 
   // Ctrl+클릭 definition target: same document → just jump; another file → stack it
-  // (with the jump), so 뒤로 can unwind back to where the exploration started
-  const effPathRef = useRef(effPath)
-  effPathRef.current = effPath
+  // (with the jump), so 뒤로 can unwind. 새 점프는 앞으로(fwd) 기록을 무효화한다(브라우저처럼).
   const handleNavigate = useCallback(
     (loc: LspLocation) => {
       // 점프 직전의 텍스트 선택(더블클릭 단어 등)은 도착지에서 무의미한데 선택
       // 툴바까지 끌고 와 남는다 — 항해 시점에 정리
       window.getSelection()?.removeAllRanges()
-      // 떠나는 파일(CM)의 캐럿 위치를 저장 — 뒤로가기로 돌아오면 복원
-      const leaving = cmRef.current?.getCaret()
-      if (leaving != null && effPathRef.current) posMap.current.set(canonPath(effPathRef.current, cwd), leaving)
+      rememberCaret() // 떠나는 파일(CM) 캐럿 저장 — 뒤로/앞으로로 돌아오면 복원
       const target = displayPath(loc.path, cwd)
       // 다른 파일로의 점프는 최근 파일 탭에도 기록 (앱 공통 키 형식인 슬래시 rel 경로로)
       const cur = effPathRef.current
@@ -1775,11 +1768,11 @@ export function FileModal({
         if (v.root == null) return v
         const current = v.stack.length ? v.stack[v.stack.length - 1].path : v.root
         const jump = { line: loc.line + 1, tick: (v.jump?.tick ?? 0) + 1 }
-        if (canonPath(current, cwd) === canonPath(target, cwd)) return { ...v, jump }
-        return { ...v, stack: [...v.stack, { path: target }], jump }
+        if (canonPath(current, cwd) === canonPath(target, cwd)) return { ...v, jump, fwd: [] }
+        return { ...v, stack: [...v.stack, { path: target }], jump, fwd: [] }
       })
     },
-    [cwd, onViewFile]
+    [cwd, onViewFile, rememberCaret]
   )
 
   if (!path || !effPath) return null
@@ -1799,13 +1792,13 @@ export function FileModal({
       <div className="fv-modal rzm" ref={modalRef} style={rz.modalStyle}>
         <div className="diff-head" onDoubleClick={rz.onHeaderDoubleClick}>
           {vs.stack.length > 0 && (
-            <button
-              className="dclose htip fv-back"
-              onClick={() => setVs((v) => ({ ...v, stack: v.stack.slice(0, -1), jump: null }))}
-              aria-label="뒤로"
-              data-tip="이전 파일로"
-            >
+            <button className="dclose htip fv-back" onClick={goBack} aria-label="뒤로" data-tip="이전 파일로 (마우스 뒤로 버튼)">
               <IconChevLeft size={15} />
+            </button>
+          )}
+          {vs.fwd.length > 0 && (
+            <button className="dclose htip fv-back" onClick={goForward} aria-label="앞으로" data-tip="다음 파일로 (마우스 앞으로 버튼)">
+              <IconChevRight size={15} />
             </button>
           )}
           <FileBadge path={effPath} size={22} />
@@ -1844,14 +1837,14 @@ export function FileModal({
           )}
           {cmEligible && (
             <button
-              className={'fv-lsp install htip' + (cmEngine ? ' on' : '')}
-              onClick={() => setCmEngine((v) => !v)}
-              data-tip={cmEngine ? '기존 뷰어로 돌아가기' : 'CodeMirror 편집기로 보기 (실험)'}
+              className={'fv-lsp cm-mode htip ' + cmMode}
+              onClick={() => setCmMode((m) => (m === 'read' ? 'edit' : 'read'))}
+              data-tip={cmMode === 'read' ? '편집 모드로 전환 (Ctrl+E)' : '읽기 모드로 전환 (Ctrl+E)'}
             >
-              {cmEngine ? 'CM 끄기' : 'CM 편집기 (실험)'}
+              {cmMode === 'read' ? '읽기' : '편집'}
             </button>
           )}
-          {cmEligible && cmEngine && cmDirty && (
+          {cmEligible && cmDirty && (
             <button
               className="fv-lsp install htip"
               onClick={() => cmRef.current?.save()}
@@ -1860,7 +1853,7 @@ export function FileModal({
               ● 저장
             </button>
           )}
-          {cmEligible && cmEngine && !cmDirty && cmSaved && <span className="fv-lsp ready">저장됨</span>}
+          {cmEligible && !cmDirty && cmSaved && <span className="fv-lsp ready">저장됨</span>}
           {lspStatus === 'starting' && (
             <span className="fv-lsp starting">
               <span className="spin" /> 심볼 분석 준비 중
@@ -1912,7 +1905,7 @@ export function FileModal({
           </div>
         ) : res.error || res.content == null ? (
           <div className="fv-empty">{res.error || '내용이 없어요'}</div>
-        ) : cmEngine && cmEligible ? (
+        ) : cmEligible ? (
           <CmEditor
             key={effPath}
             ref={cmRef}
@@ -1922,6 +1915,8 @@ export function FileModal({
             cwd={cwd}
             sem={sem}
             structOv={structOv}
+            marks={marks}
+            readOnly={cmMode === 'read'}
             zoom={z.zoom}
             lsp={lspStatus === 'ready'}
             jump={vs.jump}

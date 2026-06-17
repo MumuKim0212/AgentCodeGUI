@@ -312,6 +312,8 @@ export interface WindowBounds {
 }
 /** Which edge/corner of the frameless window a resize grabs. */
 export type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+/** Snap-layout target: 반쪽(left/right) · 쿼터(tl/tr/bl/br) · 최대화(max). */
+export type SnapZone = 'left' | 'right' | 'tl' | 'tr' | 'bl' | 'br' | 'max'
 
 // ── Rate-limit usage (from the OAuth usage API) ──────────────
 export interface UsageWindow {

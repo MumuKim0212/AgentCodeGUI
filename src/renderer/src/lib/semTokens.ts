@@ -146,3 +146,45 @@ export function semByLine(
   }
   return m.size ? m : null
 }
+
+// 식별자 이름 → 색 클래스 사전 (같은 이름이 여러 분류로 나오면 다수결). 호버 카드의
+// 시그니처를 본문과 같은 시맨틱 색으로 칠하는 데 쓴다(HoverContent의 dict). 뷰어
+// CodeView의 semDict와 동일 로직 — C#처럼 UE 명명규칙 폴백이 없는 언어도 이 사전으로
+// 시그니처 식별자가 칠해진다.
+export function buildSemDict(
+  sem: LspSemanticTokens,
+  lang: string,
+  text: string,
+  structOv?: StructOv | null
+): Map<string, string> | null {
+  if (!sem.data.length) return null
+  const rider = !!paletteClassFor(lang)
+  const cpp = lang === 'cpp' || lang === 'c'
+  const srcLines = text.split('\n')
+  const counts = new Map<string, Map<string, number>>()
+  for (let i = 0; i < sem.data.length; i += 5) {
+    const type = sem.types[sem.data[i + 3]] ?? ''
+    let cls = rider ? riderSemClass(type, sem.data[i + 4], sem.mods, cpp) : SEM_CLASS[type]
+    if (!cls) continue
+    const t = (srcLines[sem.data[i]] ?? '').substr(sem.data[i + 1], sem.data[i + 2])
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(t)) continue // 연산자·괄호 토큰 제외
+    if (structOv && (type === 'class' || type === 'property')) {
+      if (type === 'class' ? structOv.types.has(t) : structOv.fields.has(t)) cls = 'sem-type2'
+    }
+    let byCls = counts.get(t)
+    if (!byCls) counts.set(t, (byCls = new Map()))
+    byCls.set(cls, (byCls.get(cls) ?? 0) + 1)
+  }
+  const dict = new Map<string, string>()
+  for (const [t, byCls] of counts) {
+    let best = ''
+    let bn = 0
+    for (const [cls, n] of byCls)
+      if (n > bn) {
+        bn = n
+        best = cls
+      }
+    dict.set(t, best)
+  }
+  return dict.size ? dict : null
+}

@@ -17,7 +17,7 @@ import * as gitApi from './git'
 import { lspManager } from './lsp/manager'
 import { initAutoUpdater, checkForUpdates, quitAndInstall, getUpdateStatus } from './updater'
 import { IPC } from '@shared/protocol'
-import type { EngineEvent, RunRequest, PermissionResponse, QuestionResponse, WindowBounds, ResizeEdge, UsageInfo, UsageWindow, FileReadResult, FileWriteResult, UserProfile, MultiRunRequest, MultiPermissionResponse, MultiQuestionResponse, LspPos } from '@shared/protocol'
+import type { EngineEvent, RunRequest, PermissionResponse, QuestionResponse, WindowBounds, ResizeEdge, SnapZone, UsageInfo, UsageWindow, FileReadResult, FileWriteResult, UserProfile, MultiRunRequest, MultiPermissionResponse, MultiQuestionResponse, LspPos } from '@shared/protocol'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -193,6 +193,7 @@ function stopDrag(): void {
     clearInterval(dragTimer)
     dragTimer = null
   }
+  hideSnapPreview() // 드래그가 끝나거나 끊기면 스냅 고스트도 같이 내린다
 }
 function stopResize(): void {
   if (resizeTimer) {
@@ -249,6 +250,97 @@ function setMaximized(want: boolean): void {
     }
   }
   scheduleSave()
+}
+
+// ── 커스텀 스냅 (반쪽/쿼터/최대화) + 드래그 미리보기 ──────────────────────────
+// 투명·프레임리스·수동드래그 창이라 네이티브 Snap Layouts/Aero Snap이 안 떠서 직접 구현.
+function snapBounds(zone: Exclude<SnapZone, 'max'>, wa: WindowBounds): WindowBounds {
+  const hw = Math.round(wa.width / 2)
+  const hh = Math.round(wa.height / 2)
+  const rw = wa.width - hw // 우측/하단 잔차 흡수 → 두 쪽이 화면을 정확히 채움
+  const bh = wa.height - hh
+  switch (zone) {
+    case 'left':
+      return { x: wa.x, y: wa.y, width: hw, height: wa.height }
+    case 'right':
+      return { x: wa.x + hw, y: wa.y, width: rw, height: wa.height }
+    case 'tl':
+      return { x: wa.x, y: wa.y, width: hw, height: hh }
+    case 'tr':
+      return { x: wa.x + hw, y: wa.y, width: rw, height: hh }
+    case 'bl':
+      return { x: wa.x, y: wa.y + hh, width: hw, height: bh }
+    case 'br':
+      return { x: wa.x + hw, y: wa.y + hh, width: rw, height: bh }
+  }
+}
+function applySnap(zone: SnapZone): void {
+  if (!mainWindow) return
+  if (zone === 'max') {
+    setMaximized(true)
+    return
+  }
+  const b = snapBounds(zone, workAreaBounds())
+  customMaximized = false
+  mainWindow.setBounds(b)
+  logicalSize = { width: b.width, height: b.height }
+  send(IPC.winState, { maximized: false })
+  scheduleSave()
+}
+// 커서가 디스플레이 가장자리/모서리에 닿았을 때의 스냅 존 (없으면 null). bounds = 디스플레이 전체.
+function snapZoneFor(p: { x: number; y: number }, b: WindowBounds): SnapZone | null {
+  const T = 22 // 직선 가장자리 두께 — 타이틀바 잡은 지점이 창 위에서 한참 아래라 넉넉히
+  const C = 64 // 모서리로 인정하는 수직축 도달 범위
+  const top = p.y <= b.y + T
+  const bot = p.y >= b.y + b.height - T
+  const lef = p.x <= b.x + T
+  const rig = p.x >= b.x + b.width - T
+  const cTop = p.y <= b.y + C
+  const cBot = p.y >= b.y + b.height - C
+  const cLef = p.x <= b.x + C
+  const cRig = p.x >= b.x + b.width - C
+  if ((lef && cTop) || (top && cLef)) return 'tl'
+  if ((rig && cTop) || (top && cRig)) return 'tr'
+  if ((lef && cBot) || (bot && cLef)) return 'bl'
+  if ((rig && cBot) || (bot && cRig)) return 'br'
+  if (top) return 'max'
+  if (lef) return 'left'
+  if (rig) return 'right'
+  return null
+}
+// 스냅될 자리를 미리 보여주는 반투명 고스트 — mainWindow의 자식 창이라 함께 닫힌다.
+let snapPreviewWin: BrowserWindow | null = null
+let pendingSnapZone: SnapZone | null = null
+function showSnapPreview(zone: SnapZone, wa: WindowBounds): void {
+  if (!mainWindow) return
+  if (!snapPreviewWin || snapPreviewWin.isDestroyed()) {
+    snapPreviewWin = new BrowserWindow({
+      parent: mainWindow,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      focusable: false,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      resizable: false,
+      movable: false,
+      hasShadow: false,
+      fullscreenable: false,
+      webPreferences: { sandbox: true }
+    })
+    snapPreviewWin.setIgnoreMouseEvents(true)
+    const html =
+      '<!doctype html><meta charset="utf-8"><body style="margin:0;background:transparent;overflow:hidden">' +
+      '<div style="position:fixed;inset:7px;border-radius:12px;background:rgba(150,180,255,0.20);border:2px solid rgba(185,208,255,0.9)"></div></body>'
+    snapPreviewWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html))
+  }
+  const rect = zone === 'max' ? wa : snapBounds(zone, wa)
+  snapPreviewWin.setBounds(rect)
+  if (!snapPreviewWin.isVisible()) snapPreviewWin.showInactive()
+}
+function hideSnapPreview(): void {
+  if (snapPreviewWin && !snapPreviewWin.isDestroyed() && snapPreviewWin.isVisible()) snapPreviewWin.hide()
 }
 
 const engine = new ClaudeEngine((event: EngineEvent) => send(IPC.engineEvent, event))
@@ -658,6 +750,7 @@ function registerIpc(): void {
     const width = logicalSize.width
     const height = logicalSize.height
     stopDrag()
+    pendingSnapZone = null
     let lastX = b0.x
     let lastY = b0.y
     dragTimer = setInterval(() => {
@@ -675,9 +768,24 @@ function registerIpc(): void {
       // size from physical pixels and round it up ~1px every call, so a held/long drag
       // grew the window without bound. Re-asserting the exact size each frame pins it.
       mainWindow.setBounds({ x, y, width, height })
+      // 커서가 가장자리/모서리에 닿으면 스냅 고스트를 그 자리에 띄운다 (놓으면 거기로 스냅)
+      const disp = screen.getDisplayNearestPoint(p)
+      const zone = snapZoneFor(p, disp.bounds)
+      if (zone !== pendingSnapZone) {
+        pendingSnapZone = zone
+        if (zone) showSnapPreview(zone, disp.workArea)
+        else hideSnapPreview()
+      }
     }, 8)
   })
-  ipcMain.handle(IPC.winDragEnd, async () => stopDrag())
+  ipcMain.handle(IPC.winDragEnd, async () => {
+    stopDrag() // 고스트도 내려간다
+    if (pendingSnapZone) {
+      const z = pendingSnapZone
+      pendingSnapZone = null
+      applySnap(z)
+    }
+  })
 
   // Manual edge resize. Like the drag, we sample the real OS cursor here instead of
   // trusting renderer pointer events: a renderer-driven resize on the top/left edges

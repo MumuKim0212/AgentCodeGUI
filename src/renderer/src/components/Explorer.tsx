@@ -1,4 +1,5 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { ChangedFile, DirEntry } from '@shared/protocol'
 import { FileBadge } from './fileType'
 import { getPref, setPref } from '../lib/prefs'
@@ -225,6 +226,7 @@ export const Explorer = memo(function Explorer({
   // 모달이 떠 있을 때는 그쪽 키보드 소유권을 존중해 양보한다.
   const searchRef = useRef<HTMLInputElement>(null)
   const focusOnOpen = useRef(false)
+  const asideRef = useRef<HTMLElement>(null) // 스크롤 밖으로 띄우는 툴팁(ScrollTip)의 기준
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f') return
@@ -320,7 +322,8 @@ export const Explorer = memo(function Explorer({
   }
 
   return (
-    <aside className="explorer">
+    <aside className="explorer" ref={asideRef}>
+      <ScrollTip rootRef={asideRef} />
       <div className="exp-head">
         <span className="exp-title">탐색기</span>
         {/* 수동 새로고침은 제거 — 턴이 끝날 때마다 자동 갱신된다. 그 자리에 Git 카드 진입 */}
@@ -465,4 +468,69 @@ function indent(depth: number): number {
 function basename(p: string): string {
   const parts = p.split(/[\\/]+/).filter(Boolean)
   return parts.length ? parts[parts.length - 1] : p
+}
+
+// 트리/폴더 행 툴팁 — CSS ::after 툴팁은 스크롤 컨테이너(.exp-tree, overflow)에서 잘려 안 보인다.
+// 그래서 그 두 영역의 [data-tip]은 여기서 body로 포털한 fixed 툴팁으로 띄운다(클리핑 탈출).
+// (CSS 쪽은 .exp-tree/.exp-folders 의 ::after 를 끄고, exp-head 등 다른 곳은 그대로 CSS 툴팁 유지.)
+function ScrollTip({ rootRef }: { rootRef: { current: HTMLElement | null } }) {
+  const [tip, setTip] = useState<{ text: string; rect: DOMRect } | null>(null)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    let timer = 0
+    let cur: Element | null = null
+    const clear = (): void => {
+      window.clearTimeout(timer)
+      cur = null
+      setTip(null)
+    }
+    const onOver = (e: MouseEvent): void => {
+      const el = (e.target as Element).closest?.('[data-tip]')
+      if (!el || !el.closest('.exp-tree, .exp-folders')) return
+      if (el === cur) return
+      cur = el
+      window.clearTimeout(timer)
+      setTip(null)
+      const text = el.getAttribute('data-tip') || ''
+      if (!text) return
+      timer = window.setTimeout(() => {
+        if (cur === el) setTip({ text, rect: el.getBoundingClientRect() })
+      }, 300)
+    }
+    const onOut = (e: MouseEvent): void => {
+      if (!cur) return
+      const to = e.relatedTarget as Element | null
+      if (to && cur.contains(to)) return
+      if (!to || !to.closest?.('[data-tip]')) clear() // 빈 곳/툴팁 없는 곳으로 나가면 닫는다
+    }
+    root.addEventListener('mouseover', onOver)
+    root.addEventListener('mouseout', onOut)
+    root.addEventListener('mouseleave', clear)
+    root.addEventListener('scroll', clear, true) // 스크롤하면 위치가 어긋나니 닫는다
+    return () => {
+      window.clearTimeout(timer)
+      root.removeEventListener('mouseover', onOver)
+      root.removeEventListener('mouseout', onOut)
+      root.removeEventListener('mouseleave', clear)
+      root.removeEventListener('scroll', clear, true)
+    }
+  }, [rootRef])
+  // 뷰포트 밖이면 좌우 클램프 + 아래로 넘치면 행 위로 뒤집기
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !tip) return
+    const r = tip.rect
+    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 8)) + 'px'
+    const below = r.bottom + 6
+    el.style.top = (below + el.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - 6 - el.offsetHeight) : below) + 'px'
+  }, [tip])
+  if (!tip) return null
+  return createPortal(
+    <div ref={ref} className="scroll-tip" style={{ left: tip.rect.left, top: tip.rect.bottom + 6 }}>
+      {tip.text}
+    </div>,
+    document.body
+  )
 }
