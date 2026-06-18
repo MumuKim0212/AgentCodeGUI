@@ -10,6 +10,7 @@ import { readProfile, writeProfile } from './profile'
 import { readUiPrefs, writeUiPrefs } from './uiPrefs'
 import { readChats, writeChats } from './chats'
 import { readMulti, writeMulti } from './maStore'
+import { JournalRecorder, listJournal, readJournal } from './journal'
 import { listSkills, setSkillEnabled } from './skills'
 import { listMcpServers, setMcpEnabled } from './mcp'
 import { listProjectFiles, listDir } from './files'
@@ -343,7 +344,14 @@ function hideSnapPreview(): void {
   if (snapPreviewWin && !snapPreviewWin.isDestroyed() && snapPreviewWin.isVisible()) snapPreviewWin.hide()
 }
 
-const engine = new ClaudeEngine((event: EngineEvent) => send(IPC.engineEvent, event))
+// 프로젝트-로컬 자동 작업 일지 — 엔진 이벤트를 관찰해 턴 종료 시 .journal/ 에 기록.
+// (읽기 전용인 askEngine은 관찰 대상에서 제외한다.)
+const journal = new JournalRecorder()
+
+const engine = new ClaudeEngine((event: EngineEvent) => {
+  journal.observe('main', event)
+  send(IPC.engineEvent, event)
+})
 // A second, independent engine dedicated to the "/ask" throwaway conversation. It
 // runs in parallel to `engine` (the main chat) on its own channel, so asking a quick
 // side question never cancels the main run or mixes events into the work thread.
@@ -357,7 +365,10 @@ const maEngines = new Map<string, ClaudeEngine>()
 function maEngine(panelId: string): ClaudeEngine {
   let eng = maEngines.get(panelId)
   if (!eng) {
-    eng = new ClaudeEngine((event: EngineEvent) => send(IPC.maEvent, { panelId, event }))
+    eng = new ClaudeEngine((event: EngineEvent) => {
+      journal.observe(panelId, event)
+      send(IPC.maEvent, { panelId, event })
+    })
     maEngines.set(panelId, eng)
   }
   return eng
@@ -505,7 +516,10 @@ async function getUsage(): Promise<UsageInfo> {
 }
 
 function registerIpc(): void {
-  ipcMain.handle(IPC.runStart, async (_e, req: RunRequest) => engine.run(req))
+  ipcMain.handle(IPC.runStart, async (_e, req: RunRequest) => {
+    journal.onRunStart('main', req)
+    return engine.run(req)
+  })
   ipcMain.handle(IPC.runCancel, async () => {
     await engine.cancel()
   })
@@ -521,7 +535,10 @@ function registerIpc(): void {
   ipcMain.handle(IPC.askQuestionRespond, async (_e, res: QuestionResponse) => askEngine.respondQuestion(res))
 
   // multi-agent — route each command to its panel's engine (lazily created on first run)
-  ipcMain.handle(IPC.maRun, async (_e, req: MultiRunRequest) => maEngine(req.panelId).run(req))
+  ipcMain.handle(IPC.maRun, async (_e, req: MultiRunRequest) => {
+    journal.onRunStart(req.panelId, req)
+    return maEngine(req.panelId).run(req)
+  })
   ipcMain.handle(IPC.maCancel, async (_e, panelId: string) => {
     await maEngines.get(panelId)?.cancel()
   })
@@ -538,9 +555,16 @@ function registerIpc(): void {
       await eng.cancel()
       maEngines.delete(panelId)
     }
+    journal.drop(panelId)
   })
   ipcMain.handle(IPC.maGet, async () => readMulti())
   ipcMain.handle(IPC.maSave, async (_e, data: unknown) => writeMulti(data))
+
+  // journal — 프로젝트-로컬 자동 작업 일지(.journal/) 읽기 (뷰어용)
+  ipcMain.handle(IPC.journalList, async (_e, cwd: string) => listJournal(cwd || ''))
+  ipcMain.handle(IPC.journalRead, async (_e, a: { cwd: string; id: string }) =>
+    readJournal(a.cwd || '', a.id)
+  )
 
   ipcMain.handle(IPC.pickDirectory, async () => {
     if (!mainWindow) return null

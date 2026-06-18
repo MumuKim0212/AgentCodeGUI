@@ -57,6 +57,10 @@ const api: WindowApi = {
     push: (root: string) => ipcRenderer.invoke(IPC.gitPush, root),
     pull: (root: string) => ipcRenderer.invoke(IPC.gitPull, root)
   },
+  journal: {
+    list: (cwd: string) => ipcRenderer.invoke(IPC.journalList, cwd),
+    read: (cwd: string, id: string) => ipcRenderer.invoke(IPC.journalRead, { cwd, id })
+  },
   lsp: {
     status: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspStatus, { cwd, relPath }),
     hover: (cwd: string, relPath: string, pos: LspPos) => ipcRenderer.invoke(IPC.lspHover, { cwd, relPath, pos }),

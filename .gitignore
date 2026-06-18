@@ -21,3 +21,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Claude Code — 머신/세션 로컬 권한 설정(공유 금지)
+.claude/settings.local.json

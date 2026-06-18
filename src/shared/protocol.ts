@@ -53,6 +53,33 @@ export interface FileDiff {
   lines: DiffLine[]
 }
 
+// ── Journal (프로젝트-로컬 자동 작업 일지 / .journal/) ───────
+/** 5종 분류 — Ocul-PM 차용. config.md에서 키워드 오버라이드 가능. */
+export type JournalCategory = 'bugfix' | 'feature' | 'refactor' | 'error' | 'chore'
+
+/** 일지 엔트리의 프론트매터 메타 — 타임라인 목록 렌더에 쓰는 가벼운 형태. */
+export interface JournalEntryMeta {
+  id: string // 예: 20260618-143205-a1b2
+  timestamp: string // ISO8601 (로컬 오프셋 포함)
+  category: JournalCategory
+  title: string
+  model: string
+  changedFiles: string[] // 워크스페이스-상대 경로
+  diffRef: string | null // .journal 기준 상대 경로 (변경 없으면 null)
+  costUsd: number | null
+  durationMs: number | null
+  numTurns: number | null
+  sessionId: string | null
+  day: string // YYYY-MM-DD — 그룹핑용(파일 위치에서 파생)
+}
+
+/** 한 엔트리의 전체 내용 — 상세 뷰용. 렌더링 방식은 뷰어(M2)가 결정. */
+export interface JournalEntry {
+  meta: JournalEntryMeta
+  markdown: string // 엔트리 .md 원문
+  diffText: string | null // diff 스냅샷 원문(unified), 없으면 null
+}
+
 // ── Git (탐색기 Git 카드) ─────────────────────────────────────
 export type GitFileStatus = 'M' | 'A' | 'D' | 'R'
 export interface GitChange {
@@ -491,6 +518,9 @@ export const IPC = {
   gitCommit: 'git:commit', // add -A + commit
   gitPush: 'git:push',
   gitPull: 'git:pull', // --ff-only
+  // journal — 프로젝트-로컬 자동 작업 일지 (.journal/), git으로 따라다님
+  journalList: 'journal:list', // cwd → 엔트리 메타 목록(최신순)
+  journalRead: 'journal:read', // cwd + id → 엔트리 원문 + diff 스냅샷
   // app meta + auto-update (electron-updater)
   appGetVersion: 'app:get-version', // the running app version (package.json version)
   appGetInitialDir: 'app:get-initial-dir', // folder passed via "AgentCodeGUI로 열기" at launch (consumed once)

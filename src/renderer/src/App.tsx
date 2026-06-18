@@ -14,6 +14,7 @@ import { AskModal } from './components/AskModal'
 import { FolderSwitchDialog } from './components/FolderSwitchDialog'
 import { FileModal } from './components/FileModal'
 import { GitModal, type GitFileOpen } from './components/GitModal'
+import { JournalModal } from './components/JournalModal'
 import { ImageViewer } from './components/ImageViewer'
 import { SettingsModal } from './components/Settings'
 import { EngineGate } from './components/EngineGate'
@@ -130,6 +131,8 @@ function MainApp({ user }: { user: AppUser }) {
   // 탐색기 ⎇ 버튼 → Git 카드. 루트는 메인 프로세스가 상위 폴더까지 탐색(cwd별 캐시)
   const [gitOpen, setGitOpen] = useState(false)
   const [gitRoot, setGitRoot] = useState<string | null>(null)
+  // 탐색기 일지 버튼 → 작업 일지 카드(.journal/ 타임라인)
+  const [journalOpen, setJournalOpen] = useState(false)
   // a working-folder change that would reset the current conversation, parked here
   // until the user confirms it in the card modal (변경) or backs out (취소)
   const [pendingFolder, setPendingFolder] = useState<string | null>(null)
@@ -886,6 +889,10 @@ function MainApp({ user }: { user: AppUser }) {
   const onOpenGit = useEvent(() => {
     if (gitRoot) setGitOpen(true)
   })
+  // ── 작업 일지 카드 ─────────────────────────────────────────
+  const onOpenJournal = useEvent(() => {
+    if (cwd) setJournalOpen(true)
+  })
   // Git 카드에서 파일 열기 — 커밋 시점 내용/마킹을 뷰어에 일회성으로 넘긴다
   const onGitOpenFile = useEvent((p: GitFileOpen) => {
     setFileOverride({ content: p.content, diff: p.diff, label: p.label })
@@ -952,6 +959,7 @@ function MainApp({ user }: { user: AppUser }) {
           changed={state.files}
           gitReady={!!gitRoot}
           onOpenGit={onOpenGit}
+          onOpenJournal={onOpenJournal}
           onViewFolderChange={onExplorerView}
         />
 
@@ -1054,6 +1062,8 @@ function MainApp({ user }: { user: AppUser }) {
       {gitOpen && gitRoot && (
         <GitModal root={gitRoot} cwd={cwd} onClose={() => setGitOpen(false)} onOpenFile={onGitOpenFile} onAskClaude={onGitAskClaude} />
       )}
+
+      {journalOpen && cwd && <JournalModal cwd={cwd} onClose={() => setJournalOpen(false)} />}
 
       <FileModal
         path={openFilePath}

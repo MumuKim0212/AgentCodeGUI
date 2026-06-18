@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import type { ChangedFile, DirEntry } from '@shared/protocol'
 import { FileBadge } from './fileType'
 import { getPref, setPref } from '../lib/prefs'
-import { IconChevLeft, IconChevRight, IconFolder, IconFolderOpen, IconGitBranch, IconPlus, IconSearch, IconX2 } from './icons'
+import { IconBook, IconChevLeft, IconChevRight, IconFolder, IconFolderOpen, IconGitBranch, IconPlus, IconSearch, IconX2 } from './icons'
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
 
@@ -41,6 +41,7 @@ export const Explorer = memo(function Explorer({
   changed,
   gitReady,
   onOpenGit,
+  onOpenJournal,
   onViewFolderChange
 }: {
   cwd: string
@@ -52,6 +53,7 @@ export const Explorer = memo(function Explorer({
   changed?: ChangedFile[] // 이 세션에서 AI가 만든/수정한 파일 (rel posix) → 색·배지 표시
   gitReady?: boolean // 메인 작업 폴더가 git 레포 안에 있는지 (상위 탐색 포함)
   onOpenGit?: () => void // ⎇ 버튼 → Git 카드 (커밋 히스토리·변경 사항)
+  onOpenJournal?: () => void // 일지 버튼 → 작업 일지 카드 (.journal/ 타임라인)
   onViewFolderChange?: (folder: string) => void // 지금 보고 있는 폴더(메인/참고)를 알림 → 채팅 @ 멘션의 기준
 }) {
   // 참고 폴더(보기 전용) 목록과 지금 보고 있는 폴더('' = 메인). cwd가 바뀌면(채팅
@@ -340,6 +342,15 @@ export const Explorer = memo(function Explorer({
           disabled={!cwd || !gitReady}
         >
           <IconGitBranch size={14} />
+        </button>
+        <button
+          className="exp-act has-tip"
+          data-tip={cwd ? '작업 일지 — 자동 기록 타임라인' : '폴더를 먼저 여세요'}
+          aria-label="작업 일지"
+          onClick={onOpenJournal}
+          disabled={!cwd}
+        >
+          <IconBook size={14} />
         </button>
         <button className="exp-act has-tip" data-tip="탐색기 접기" aria-label="탐색기 접기" onClick={onToggle}>
           <IconChevLeft size={13} />

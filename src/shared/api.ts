@@ -32,7 +32,9 @@ import type {
   GitCommit,
   GitChange,
   GitFileAt,
-  GitOpResult
+  GitOpResult,
+  JournalEntryMeta,
+  JournalEntry
 } from './protocol'
 
 /** The surface exposed to the renderer via `window.api` (contextBridge). */
@@ -93,6 +95,13 @@ export interface WindowApi {
     push(root: string): Promise<GitOpResult>
     /** --ff-only 풀 */
     pull(root: string): Promise<GitOpResult>
+  }
+  /** 프로젝트-로컬 자동 작업 일지(.journal/) — 앱이 턴 종료마다 기록, git으로 따라다님 */
+  journal: {
+    /** cwd의 .journal/entries 를 읽어 엔트리 메타 목록(최신순)으로 */
+    list(cwd: string): Promise<JournalEntryMeta[]>
+    /** 한 엔트리의 원문 마크다운 + diff 스냅샷 텍스트 */
+    read(cwd: string, id: string): Promise<JournalEntry | null>
   }
   /** LSP code intelligence for the in-app viewer (lazy per-project language servers) */
   lsp: {
