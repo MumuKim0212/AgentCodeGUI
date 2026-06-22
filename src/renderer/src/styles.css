@@ -2611,6 +2611,16 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 .sb-mode-btn:hover{ color:var(--text-2); }
 .sb-mode-btn.on{ background:var(--accent); color:var(--on-accent); box-shadow:0 2px 8px -3px var(--accent); }
 .sb-mode-btn.on svg{ opacity:1; }
+/* three modes (채팅 · 에이전트 · 멀티) — tighten spacing so the labels fit the rail width */
+.sb-mode.three{ gap:2px; }
+.sb-mode.three .sb-mode-btn{ gap:4px; padding:7px 3px; font-size:11.5px; }
+.sb-mode.three .sb-mode-btn span{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* the mode-tab tooltips sit above the bar; anchor the edge tabs to their own edge so a
+   centered tooltip never clips off the sidebar's left/right (middle tab stays centered) */
+.sb-mode .sb-mode-btn:first-child.has-tip::after{ left:0; transform:translate(0, 3px); }
+.sb-mode .sb-mode-btn:first-child.has-tip:hover::after{ transform:translate(0, 0); }
+.sb-mode .sb-mode-btn:last-child.has-tip::after{ left:auto; right:0; transform:translate(0, 3px); }
+.sb-mode .sb-mode-btn:last-child.has-tip:hover::after{ transform:translate(0, 0); }
 
 /* ============================== MULTI-AGENT WORKSPACE ============================== */
 .multi{ flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg); position:relative; }

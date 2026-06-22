@@ -2,9 +2,10 @@ import { memo, useEffect, useState } from 'react'
 import type { AppUser, AgentStatus } from '@shared/protocol'
 import { useAppVersion } from '../lib/version'
 import { getPref, setPref } from '../lib/prefs'
-import { IconSearch, IconPlus, IconMore, IconPencil, IconSpark, IconTrash, IconCode, IconGrid, IconSquare, IconChevLeft, IconChevRight } from './icons'
+import { IconSearch, IconPlus, IconMore, IconPencil, IconSpark, IconTrash, IconCode, IconGrid, IconSquare, IconMessage, IconChevLeft, IconChevRight } from './icons'
 
-export type WorkspaceMode = 'single' | 'multi'
+// 채팅 = pure conversation (no folder/explorer) · single = one coding agent · multi = parallel agents
+export type WorkspaceMode = 'chat' | 'single' | 'multi'
 
 export interface ChatSummary {
   id: string
@@ -272,6 +273,7 @@ export const Sidebar = memo(function Sidebar({
   onModeChange,
   listLabel = '최근 채팅',
   newLabel = '새 채팅',
+  newTip = '새로운 대화를 시작해요',
   searchLabel = '채팅 검색…'
 }: {
   user: AppUser
@@ -290,6 +292,7 @@ export const Sidebar = memo(function Sidebar({
   onModeChange?: (m: WorkspaceMode) => void
   listLabel?: string // recent-list heading (단일: 최근 채팅 · 멀티: 최근 작업)
   newLabel?: string // new-item button label
+  newTip?: string // new-item button hover tooltip (설명형 — 라벨 반복이 아니라 동작 설명)
   searchLabel?: string // search input placeholder (단일: 채팅 검색 · 멀티: 작업 검색)
 }) {
   const appVersion = useAppVersion()
@@ -343,29 +346,41 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       {onModeChange && (
-        <div className="sb-mode" role="tablist" aria-label="작업 모드">
+        <div className="sb-mode three" role="tablist" aria-label="작업 모드">
+          <button
+            role="tab"
+            aria-selected={mode === 'chat'}
+            className={'sb-mode-btn has-tip' + (mode === 'chat' ? ' on' : '')}
+            data-tip="폴더 없이 순수하게 대화만"
+            onClick={() => onModeChange('chat')}
+          >
+            <IconMessage size={14} />
+            <span>채팅</span>
+          </button>
           <button
             role="tab"
             aria-selected={mode === 'single'}
-            className={'sb-mode-btn' + (mode === 'single' ? ' on' : '')}
+            className={'sb-mode-btn has-tip' + (mode === 'single' ? ' on' : '')}
+            data-tip="탐색기·도구를 갖춘 코딩 에이전트"
             onClick={() => onModeChange('single')}
           >
             <IconSquare size={14} />
-            <span>단일 에이전트</span>
+            <span>에이전트</span>
           </button>
           <button
             role="tab"
             aria-selected={mode === 'multi'}
-            className={'sb-mode-btn' + (mode === 'multi' ? ' on' : '')}
+            className={'sb-mode-btn has-tip' + (mode === 'multi' ? ' on' : '')}
+            data-tip="여러 에이전트로 동시에 작업"
             onClick={() => onModeChange('multi')}
           >
             <IconGrid size={14} />
-            <span>멀티 에이전트</span>
+            <span>멀티</span>
           </button>
         </div>
       )}
 
-      <button className="sb-new has-tip" onClick={onNewChat} disabled={busy} data-tip={busy ? '작업이 끝난 뒤 시작할 수 있어요' : newLabel}>
+      <button className="sb-new has-tip" onClick={onNewChat} disabled={busy} data-tip={busy ? '작업이 끝난 뒤 시작할 수 있어요' : newTip}>
         <IconPlus size={16} />
         <span>{newLabel}</span>
         <span className="kbd">{isMac ? '⌘N' : 'Ctrl N'}</span>

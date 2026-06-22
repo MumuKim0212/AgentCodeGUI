@@ -1597,6 +1597,7 @@ export function MultiWorkspace({
         onModeChange={onModeChange}
         listLabel="최근 작업"
         newLabel="새 작업"
+        newTip="새로운 작업을 시작해요"
         searchLabel="작업 검색…"
       />
 

@@ -319,6 +319,12 @@ export const IconSquare = (p: IconProps) => (
     <rect x={4} y={4} width={16} height={16} rx={2.5} />
   </Icon>
 )
+// speech bubble — the 채팅(pure conversation) mode glyph
+export const IconMessage = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z" />
+  </Icon>
+)
 // open a panel to the full-screen modal
 export const IconExpand = (p: IconProps) => (
   <Icon {...p}>

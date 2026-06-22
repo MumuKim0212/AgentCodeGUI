@@ -435,6 +435,14 @@ export const IPC = {
   maDispose: 'ma:dispose', // cancel + drop a panel's engine (panel removed)
   maGet: 'ma:get', // load the persisted multi-agent workspace (layout + panel snapshots)
   maSave: 'ma:save', // persist the multi-agent workspace so it survives a restart
+  // 채팅 — a pure-conversation workspace on its OWN engine instance (like /ask but
+  // persistent, with its own conversation list). No project folder, explorer, or tools UI.
+  talkRun: 'talk:run',
+  talkCancel: 'talk:cancel',
+  talkPermissionRespond: 'talk:permission-respond',
+  talkQuestionRespond: 'talk:question-respond',
+  talkGet: 'talk:get', // load the persisted chat-workspace conversations (or null)
+  talkSave: 'talk:save', // persist the chat-workspace conversations so they survive a restart
   pickDirectory: 'dialog:pick-directory',
   pickImages: 'dialog:pick-images', // open dialog filtered to image files; returns absolute paths
   saveImageData: 'image:save-data', // persist pasted/dropped raw image bytes to a temp file; returns its path
@@ -503,6 +511,7 @@ export const IPC = {
   updateEvent: 'app:update-event', // streamed auto-update status
   askEvent: 'ask:event', // streamed events from the /ask engine (separate channel)
   maEvent: 'ma:event', // streamed events from every multi-agent engine (wrapped with panelId)
+  talkEvent: 'talk:event', // streamed events from the 채팅 (pure conversation) engine
   engineInstallProgress: 'engine:install-progress',
   lspInstallProgress: 'lsp:install-progress', // streamed progress while downloading a language server
   winState: 'win:state'
