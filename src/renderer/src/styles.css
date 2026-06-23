@@ -575,6 +575,9 @@ input,textarea{ font-family:inherit; }
    px 경계를 줌 배율(--z, Ctrl+휠)로 나누는 건 zoom이 레이아웃까지 키우는 보정 —
    이렇게 해야 확대해도 칼럼의 "보이는 폭"은 그대로 두고 글자만 커지며 재줄바꿈된다 */
 .thread{ max-width:clamp(calc(760px / var(--z, 1)), 88%, calc(1400px / var(--z, 1))); margin:0 auto; padding:26px 28px 30px; display:flex; flex-direction:column; gap:24px; }
+/* 순수 채팅 모드(.chat--talk): 탐색기·에이전트 패널이 없어 칼럼이 끝까지 넓다.
+   본문을 92%·상한 1600px로 키워 양옆 여백을 줄인다 (가용 폭이 좁으면 그대로 따라 줄어듦) */
+.chat--talk .thread{ max-width:clamp(calc(760px / var(--z, 1)), 92%, calc(1600px / var(--z, 1))); }
 /* native virtualization: the browser skips layout/paint for off-screen messages,
    so very long conversations stay smooth to scroll and cheap to render. The `auto`
    keyword remembers each message's real height after it's first measured. */
@@ -835,6 +838,8 @@ input,textarea{ font-family:inherit; }
 /* 컴포저(게이지·입력창)는 의도적으로 760px 고정 — 본문(.thread)은 창에 비례해
    넓어지지만, 입력 영역까지 따라 늘면 가로로 휑해져 오히려 산만하다(사용자 피드백) */
 .composer-inner{ max-width:760px; margin:0 auto; }
+/* 채팅 모드는 입력창만 살짝 넓혀(760→880px) 넓어진 본문과 균형을 맞춘다 */
+.chat--talk .composer-inner{ max-width:880px; }
 .suggest{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:11px; }
 .suggest .chip{
   font-size:12.5px; color:var(--text-2); background:var(--surface); border:1px solid var(--line-2);

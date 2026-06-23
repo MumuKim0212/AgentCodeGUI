@@ -25,6 +25,7 @@ import {
 } from './Chat'
 import { Sidebar, type WorkspaceMode } from './Sidebar'
 import { ImageViewer } from './ImageViewer'
+import { useZoom, ZoomBadge, mergeRefs } from './zoom'
 
 // px from the bottom within which the chat counts as "at the bottom" — scrolling
 // back into this band (when not mid scroll-up) resumes auto-follow (mirrors 단일 모드)
@@ -132,6 +133,12 @@ export function ChatWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
 
+  // Ctrl+휠로 채팅 글자 크기 조절 (단일/멀티 모드와 같은 'chat.zoom' 키를 공유해 한 번
+  // 정한 읽기 크기가 모드 간에 일관되게 유지된다). zoom.ref(휠 리스너용 콜백 ref)를
+  // 스크롤 뷰포트에 합쳐 붙인다 — 콜백 ref는 stable하므로 memo가 재생성되지 않는다.
+  const chatZoom = useZoom('chat.zoom')
+  const chatScrollRef = useMemo(() => mergeRefs(scrollRef, chatZoom.ref), [chatZoom.ref])
+
   // 내가 보낸 메시지(오래된→최신) — 작성칸에서 ↑/↓로 셸처럼 다시 불러온다
   const sentHistory = useMemo(
     () =>
@@ -212,6 +219,7 @@ export function ChatWorkspace({
     const el = scrollRef.current
     if (!el) return
     const onWheel = (e: WheelEvent): void => {
+      if (e.ctrlKey) return // ctrl+wheel은 줌(zoom 훅이 처리) — 스크롤이 아니다
       if (e.deltaY < 0) {
         stickRef.current = false
         lastWheelUpRef.current = e.timeStamp
@@ -538,9 +546,13 @@ export function ChatWorkspace({
         onModeChange={onModeChange}
       />
 
-      <div className="chat">
+      {/* chat--talk: 순수 채팅 모드는 탐색기/에이전트 패널이 없어 칼럼이 끝까지 넓어진다.
+          이 스코프에서만 본문·컴포저 폭을 키워 양옆 여백을 줄인다(에이전트 모드의 760px
+          고정 컴포저는 그대로 둔다) */}
+      <div className="chat chat--talk">
         <ChatHeader title={taskTitle} />
-        <div className="chat-scroll scroll" ref={scrollRef}>
+        <ZoomBadge pct={chatZoom.pct} show={chatZoom.flash} />
+        <div className="chat-scroll scroll" ref={chatScrollRef}>
           {state.messages.length === 0 && !busy ? (
             <WelcomeState
               userName={user.name}
@@ -550,7 +562,9 @@ export function ChatWorkspace({
               }}
             />
           ) : (
-            <div className="thread">
+            // --z: 줌 배율을 CSS에도 전달 — .thread가 px 폭 경계를 역보정해
+            // 확대해도 칼럼의 보이는 폭은 유지한 채 글자만 커지게 한다
+            <div className="thread" style={{ zoom: chatZoom.zoom, '--z': chatZoom.zoom } as React.CSSProperties}>
               {state.messages.map((m, idx) => {
                 const prev = state.messages[idx - 1]
                 const prevIsAiBlock =

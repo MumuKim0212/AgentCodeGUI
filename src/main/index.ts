@@ -352,7 +352,7 @@ const askEngine = new ClaudeEngine((event: EngineEvent) => send(IPC.askEvent, ev
 
 // The 채팅(pure conversation) workspace runs on its own dedicated engine — separate from
 // the main chat (`engine`) and /ask (`askEngine`) — so its events never mix into either.
-// It has no project folder; the engine falls back to the home directory for an empty cwd.
+// It has no project folder; the engine falls back to the Desktop folder for an empty cwd.
 const talkEngine = new ClaudeEngine((event: EngineEvent) => send(IPC.talkEvent, event))
 
 // ── multi-agent engine pool ─────────────────────────────────

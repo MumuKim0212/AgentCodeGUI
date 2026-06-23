@@ -679,7 +679,8 @@ const PanelView = memo(function PanelView({
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const cwd = meta.cwd || ''
-  const cwdLabel = meta.cwd ? basename(meta.cwd) : '폴더 선택'
+  // 폴더를 고르지 않으면 엔진이 바탕화면에서 동작한다 — 라벨로 그 기본값을 알린다
+  const cwdLabel = meta.cwd ? basename(meta.cwd) : '바탕화면'
 
   const status = STATUS_META[state.status]
   const winTokens = windowTokensFor(meta.picker.model, state.result?.contextWindow ?? null)
@@ -752,7 +753,7 @@ const PanelView = memo(function PanelView({
         <div className="ma-p-row2">
           <button
             className="ma-p-folder has-tip"
-            data-tip={meta.cwd || '작업 폴더 선택'}
+            data-tip={meta.cwd || '바탕화면 · 클릭해 작업 폴더 선택'}
             onClick={() => onPickFolder(slot)}
           >
             <IconFolder size={13} />
