@@ -21,3 +21,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Verse LSP spike: extracted Epic verse-lsp.exe + grammar (UE EULA — never commit)
+.verse-spike/

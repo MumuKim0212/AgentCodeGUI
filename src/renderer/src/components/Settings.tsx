@@ -587,7 +587,7 @@ function McpView({ cwd }: { cwd: string }) {
 
 // a representative filename per server id → the same FileBadge the rest of the app
 // uses, so the languages are recognizable at a glance
-const LSP_BADGE: Record<string, string> = { ts: 'a.ts', py: 'a.py', cs: 'a.cs', cpp: 'a.cpp' }
+const LSP_BADGE: Record<string, string> = { ts: 'a.ts', py: 'a.py', cs: 'a.cs', cpp: 'a.cpp', verse: 'a.verse' }
 
 // the install/remove progress card (엔진 설치와 같은 카드 모달) — one op at a time
 interface LspCard {

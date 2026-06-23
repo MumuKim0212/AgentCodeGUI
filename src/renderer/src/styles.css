@@ -801,6 +801,12 @@ input,textarea{ font-family:inherit; }
 }
 /* Rider 스킴은 주석이 이탤릭 (FONT_TYPE 2) */
 .pal-rider .hljs-comment, .pal-rider .hljs-quote, .pal-rider .hljs-doctag{ font-style:italic; }
+/* Disable font ligatures in code surfaces. JetBrains Mono ligates sequences like `>`+`:`,
+   `->`, `=>` — when the two characters belong to different syntax tokens (different colours),
+   the merged ligature glyph takes ONE token's colour, so e.g. a specifier's `>` rendered in
+   the following token's grey (looked "uncoloured"). Per-glyph rendering keeps each token's
+   colour. (CM editor = .cm-content, read viewer = .fvl, markdown/hover card = .hljs) */
+.hljs, .cm-content, .fvl{ font-variant-ligatures:none; font-feature-settings:"liga" 0, "calt" 0; }
 /* highlight.js theme — JetBrains 스킴 매핑. Scoped to the .hljs code element so it
    covers both markdown code blocks and the file viewer card. */
 .hljs .hljs-comment, .hljs .hljs-quote{ color:var(--code-cmt); }

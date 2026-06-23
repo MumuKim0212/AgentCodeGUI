@@ -76,6 +76,9 @@ const EXT: Record<string, FileType> = {
   swift: { label: 'SW', color: 'oklch(0.60 0.15 40)', lang: 'swift' },
   dart: { label: 'DART', color: 'oklch(0.55 0.12 210)', lang: '' },
   scala: { label: 'SC', color: 'oklch(0.48 0.16 15)', lang: '' },
+  // Epic Verse (UE/UEFN) — `Foo.native.verse` also resolves here (ext is the last segment).
+  // hljs id 'verse' is our own grammar registered in highlight.ts.
+  verse: { label: 'VRS', color: 'oklch(0.62 0.15 200)', lang: 'verse' },
   // data / config
   json: { label: '{}', color: 'oklch(0.63 0.13 80)', lang: 'json' },
   jsonc: { label: '{}', color: 'oklch(0.63 0.13 80)', lang: 'json' },
@@ -168,7 +171,8 @@ export function langForPath(filePath: string): string {
 // 언어별 코드 팔레트: C#/C++/F# 등 Rider 언어는 Rider(ReSharper) 스킴, 그 외는
 // IntelliJ 플랫폼 스킴(IDEA·WebStorm·PyCharm 공통). hljs 언어 id와 마크다운 펜스
 // 표기(cs, c++ …)를 모두 받아 컨테이너에 붙일 팔레트 클래스를 돌려준다.
-const RIDER_LANGS = new Set(['csharp', 'cs', 'c#', 'fsharp', 'fs', 'vbnet', 'vb', 'cpp', 'c++', 'cc', 'cxx', 'c', 'h', 'hpp'])
+// Verse rides the Rider (ReSharper) scheme alongside C#/C++ — the look that read best for it.
+const RIDER_LANGS = new Set(['csharp', 'cs', 'c#', 'fsharp', 'fs', 'vbnet', 'vb', 'cpp', 'c++', 'cc', 'cxx', 'c', 'h', 'hpp', 'verse'])
 // hljs의 내장 타입 분류가 언어마다 달라(C++은 hljs-type, C#은 hljs-built_in)
 // Rider의 '내장 타입 = 키워드 파랑'을 재현하려면 언어 보조 클래스가 필요하다
 const CS_LANGS = new Set(['csharp', 'cs', 'c#'])
