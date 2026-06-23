@@ -1629,6 +1629,18 @@ input,textarea{ font-family:inherit; }
 .cm-host.mode-read::before{ background:var(--blue); }
 .cm-host.mode-edit::before{ background:var(--gold); }
 
+/* 변경/일반 보기 토글(Ctrl+D) — 읽기 모드의 변경 tint를 켜고 끈다. 켜짐('변경')=초록(=diff
+   색)으로 또렷이, 꺼짐('일반')=보라로 — 둘 다 또렷한 hue라 읽기 파랑·편집 골드와 안 겹친다.
+   읽기/편집 칩과 같은 알약+점 디자인. */
+.fv-lsp.cm-diff{ border:none; cursor:pointer; font-family:inherit; }
+.fv-lsp.cm-diff::before{ content:''; width:6px; height:6px; border-radius:50%; }
+.fv-lsp.cm-diff.on{ color:var(--green); background:color-mix(in oklab, var(--green) 14%, transparent); }
+.fv-lsp.cm-diff.on::before{ background:var(--green); }
+.fv-lsp.cm-diff.on:hover{ background:color-mix(in oklab, var(--green) 24%, transparent); }
+.fv-lsp.cm-diff.off{ color:var(--violet); background:color-mix(in oklab, var(--violet) 14%, transparent); }
+.fv-lsp.cm-diff.off::before{ background:var(--violet); }
+.fv-lsp.cm-diff.off:hover{ background:color-mix(in oklab, var(--violet) 24%, transparent); }
+
 .cm-host .cm-find{ top:12px; }
 /* 검색 바가 에디터 최상단에 붙어 있어 버튼 툴팁을 위로 띄우면 헤더·cm-host(overflow:hidden)에
    잘린다 → 아래로 띄운다(우측 정렬은 .fv-find 규칙 유지). */
