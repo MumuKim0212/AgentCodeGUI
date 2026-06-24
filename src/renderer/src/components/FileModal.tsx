@@ -7,6 +7,7 @@ import { highlightCode, highlightToLines } from '../lib/highlight'
 import { SEM_CLASS, riderSemClass, type SemSpan, type StructOv } from '../lib/semTokens'
 import { useCppStructOv } from '../lib/cppStruct'
 import { diffMarksOf, type DiffMarks } from '../lib/cmDiff'
+import { getPref, setPref } from '../lib/prefs'
 import { isImagePath, imageSrc } from '../lib/images'
 import { FileBadge, fileTypeFor, paletteClassFor } from './fileType'
 import {
@@ -1681,7 +1682,16 @@ export function FileModal({
   const [cmDirty, setCmDirty] = useState(false) // CM 버퍼에 미저장 변경이 있는가
   const [cmSaved, setCmSaved] = useState(false) // 방금 저장됨 — 잠깐 '저장됨' 표시
   const [cmMode, setCmMode] = useState<'read' | 'edit'>('read') // 변경 파일은 읽기(diff)로 열고 '편집' 눌러 수정
-  const [diffView, setDiffView] = useState(true) // 읽기 모드의 변경 tint(초록/빨강) 표시 — Ctrl+D로 일반 보기와 토글
+  // 읽기 모드의 변경 tint(초록/빨강) 표시 — Ctrl+D로 일반 보기와 토글. 선택한 보기는
+  // 파일·네비게이션을 넘어 전역으로 유지하고 디스크에도 남긴다(prefs).
+  const [diffView, setDiffViewState] = useState(() => getPref('viewer.diffView', true))
+  const setDiffView = useCallback((next: boolean | ((v: boolean) => boolean)): void => {
+    setDiffViewState((v) => {
+      const nv = typeof next === 'function' ? next(v) : next
+      if (nv !== v) setPref('viewer.diffView', nv)
+      return nv
+    })
+  }, [])
   const cmRef = useRef<CmEditorHandle>(null)
   // 정의 이동 시 떠나는 파일의 캐럿 위치를 기억 → 뒤로가기로 돌아오면 그 자리로 복원 (CM)
   const posMap = useRef(new Map<string, number>())
@@ -1717,11 +1727,11 @@ export function FileModal({
   // Git 카드에서 온 일회성 diff(ov.diff)가 있으면 세션 diff 대신 그걸 쓴다.
   const diff = ov ? ov.diff : (effPath && diffs?.[effPath.replace(/\\/g, '/')]) || null
   const marks = useMemo(() => (diff ? diffMarksOf(diff) : null), [diff])
-  // 파일이 바뀔 때마다 항상 읽기 모드 + diff 보기로 연다(파일 종류 무관 일관). 편집은 Ctrl+E,
-  // 일반(무색) 보기는 Ctrl+D로.
+  // 파일이 바뀔 때마다 항상 읽기 모드로 연다(파일 종류 무관 일관). 편집은 Ctrl+E로.
+  // diff/일반 보기(diffView)는 여기서 리셋하지 않는다 — 사용자가 Ctrl+D로 고른 보기를
+  // 파일·네비게이션을 넘어 전역으로 유지한다.
   useEffect(() => {
     setCmMode('read')
-    setDiffView(true)
   }, [effPath])
   const isMdFile = !!effPath && fileTypeFor(effPath).lang === 'markdown'
   // CM PoC applies to non-markdown code files only (markdown keeps its render/source
