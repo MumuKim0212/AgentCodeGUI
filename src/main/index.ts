@@ -12,6 +12,7 @@ import { readChats, writeChats } from './chats'
 import { readMulti, writeMulti } from './maStore'
 import { JournalRecorder, listJournal, readJournal } from './journal'
 import { listPlans, setSubtaskDone, setGoalStatus, addSubtask, linkEntry, PlannerRecorder } from './planner'
+import { readTalk, writeTalk } from './talkStore'
 import { listSkills, setSkillEnabled } from './skills'
 import { listMcpServers, setMcpEnabled } from './mcp'
 import { listProjectFiles, listDir } from './files'
@@ -361,6 +362,11 @@ const engine = new ClaudeEngine((event: EngineEvent) => {
 // side question never cancels the main run or mixes events into the work thread.
 const askEngine = new ClaudeEngine((event: EngineEvent) => send(IPC.askEvent, event))
 
+// The 채팅(pure conversation) workspace runs on its own dedicated engine — separate from
+// the main chat (`engine`) and /ask (`askEngine`) — so its events never mix into either.
+// It has no project folder; the engine falls back to the Desktop folder for an empty cwd.
+const talkEngine = new ClaudeEngine((event: EngineEvent) => send(IPC.talkEvent, event))
+
 // ── multi-agent engine pool ─────────────────────────────────
 // One ClaudeEngine per on-screen panel, created on demand and addressed by panelId.
 // Each owns its own CLI subprocess, so N panels genuinely run in parallel; every event
@@ -539,6 +545,16 @@ function registerIpc(): void {
   })
   ipcMain.handle(IPC.askPermissionRespond, async (_e, res: PermissionResponse) => askEngine.respondPermission(res))
   ipcMain.handle(IPC.askQuestionRespond, async (_e, res: QuestionResponse) => askEngine.respondQuestion(res))
+
+  // 채팅 — the pure-conversation workspace, driven by its own engine instance
+  ipcMain.handle(IPC.talkRun, async (_e, req: RunRequest) => talkEngine.run(req))
+  ipcMain.handle(IPC.talkCancel, async () => {
+    await talkEngine.cancel()
+  })
+  ipcMain.handle(IPC.talkPermissionRespond, async (_e, res: PermissionResponse) => talkEngine.respondPermission(res))
+  ipcMain.handle(IPC.talkQuestionRespond, async (_e, res: QuestionResponse) => talkEngine.respondQuestion(res))
+  ipcMain.handle(IPC.talkGet, async () => readTalk())
+  ipcMain.handle(IPC.talkSave, async (_e, data: unknown) => writeTalk(data))
 
   // multi-agent — route each command to its panel's engine (lazily created on first run)
   ipcMain.handle(IPC.maRun, async (_e, req: MultiRunRequest) => {

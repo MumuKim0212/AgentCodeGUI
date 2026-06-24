@@ -1,6 +1,7 @@
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import { app } from 'electron'
 import { loadActiveQuery } from '../engine/versions'
 import { disabledSkillOverrides } from '../skills'
 import { deniedMcpServers } from '../mcp'
@@ -20,6 +21,16 @@ import type {
 import { computeLineDiff, newFileDiff } from './diff'
 
 type Emit = (event: EngineEvent) => void
+
+// 폴더 미선택 실행의 기본 작업 폴더 = 바탕화면. app.getPath('desktop')는 OneDrive 등으로
+// 리디렉션·로컬라이즈된 실제 바탕화면 경로를 돌려준다(드물게 실패하면 홈으로 폴백).
+function defaultCwd(): string {
+  try {
+    return app.getPath('desktop')
+  } catch {
+    return os.homedir()
+  }
+}
 
 // Claude Agent SDK permission modes (string literals, kept local to avoid
 // depending on the SDK's exact exported type names across versions).
@@ -237,7 +248,10 @@ export class ClaudeEngine {
     this.subagents.clear()
     this.baselines.clear()
 
-    const cwd = req.cwd && req.cwd.trim() ? req.cwd : os.homedir()
+    // 폴더가 지정되지 않은 실행(채팅·멀티/단일 폴더 미선택)은 홈이 아니라 바탕화면에서
+    // 동작한다 — 사용자가 결과물을 바로 확인하기 쉬운 위치. app.getPath는 OneDrive로
+    // 리디렉션된 바탕화면도 정확히 잡는다(실패 시에만 홈으로).
+    const cwd = req.cwd && req.cwd.trim() ? req.cwd : defaultCwd()
     const abort = new AbortController()
     this.abort = abort
     let resolveLoop: () => void = () => {}

@@ -194,6 +194,21 @@ export interface WindowApi {
     /** subscribe to the /ask engine's streaming events (returns an unsubscribe fn) */
     onEvent(cb: (event: EngineEvent) => void): () => void
   }
+  /** 채팅 — a pure-conversation workspace on its own dedicated engine + persistence.
+   *  No project folder, explorer, or tools UI; its own conversation list, separate from
+   *  the single-agent chats. Same payload shapes as the main chat, separate channel. */
+  talk: {
+    run(req: RunRequest): Promise<string>
+    cancel(): Promise<void>
+    respondPermission(res: PermissionResponse): Promise<void>
+    respondQuestion(res: QuestionResponse): Promise<void>
+    /** load the persisted chat-workspace conversations blob (renderer-owned shape), or null */
+    getState(): Promise<unknown>
+    /** persist the chat-workspace conversations so they survive a restart */
+    saveState(data: unknown): Promise<void>
+    /** subscribe to the 채팅 engine's streaming events (returns an unsubscribe fn) */
+    onEvent(cb: (event: EngineEvent) => void): () => void
+  }
   /** Multi-agent — a pool of independent engines, one per on-screen panel, all running
    *  in parallel. Each command names its panel; events arrive on a shared channel and
    *  are delivered per-panel by `onEvent(panelId, …)`. */

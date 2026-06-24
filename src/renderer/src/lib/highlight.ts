@@ -1,4 +1,9 @@
 import hljs from 'highlight.js/lib/common'
+import { verse } from './verseLang'
+
+// Epic's Verse (.verse) isn't part of the hljs common bundle — register our corpus-based
+// grammar once so highlightCode('verse') colours it like any built-in language.
+hljs.registerLanguage('verse', verse)
 
 // escape the three HTML-significant chars so raw code can be dropped into innerHTML safely
 function escapeHtml(s: string): string {

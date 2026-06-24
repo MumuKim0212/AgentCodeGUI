@@ -575,6 +575,9 @@ input,textarea{ font-family:inherit; }
    px 경계를 줌 배율(--z, Ctrl+휠)로 나누는 건 zoom이 레이아웃까지 키우는 보정 —
    이렇게 해야 확대해도 칼럼의 "보이는 폭"은 그대로 두고 글자만 커지며 재줄바꿈된다 */
 .thread{ max-width:clamp(calc(760px / var(--z, 1)), 88%, calc(1400px / var(--z, 1))); margin:0 auto; padding:26px 28px 30px; display:flex; flex-direction:column; gap:24px; }
+/* 순수 채팅 모드(.chat--talk): 탐색기·에이전트 패널이 없어 칼럼이 끝까지 넓다.
+   본문을 92%·상한 1600px로 키워 양옆 여백을 줄인다 (가용 폭이 좁으면 그대로 따라 줄어듦) */
+.chat--talk .thread{ max-width:clamp(calc(760px / var(--z, 1)), 92%, calc(1600px / var(--z, 1))); }
 /* native virtualization: the browser skips layout/paint for off-screen messages,
    so very long conversations stay smooth to scroll and cheap to render. The `auto`
    keyword remembers each message's real height after it's first measured. */
@@ -801,6 +804,12 @@ input,textarea{ font-family:inherit; }
 }
 /* Rider 스킴은 주석이 이탤릭 (FONT_TYPE 2) */
 .pal-rider .hljs-comment, .pal-rider .hljs-quote, .pal-rider .hljs-doctag{ font-style:italic; }
+/* Disable font ligatures in code surfaces. JetBrains Mono ligates sequences like `>`+`:`,
+   `->`, `=>` — when the two characters belong to different syntax tokens (different colours),
+   the merged ligature glyph takes ONE token's colour, so e.g. a specifier's `>` rendered in
+   the following token's grey (looked "uncoloured"). Per-glyph rendering keeps each token's
+   colour. (CM editor = .cm-content, read viewer = .fvl, markdown/hover card = .hljs) */
+.hljs, .cm-content, .fvl{ font-variant-ligatures:none; font-feature-settings:"liga" 0, "calt" 0; }
 /* highlight.js theme — JetBrains 스킴 매핑. Scoped to the .hljs code element so it
    covers both markdown code blocks and the file viewer card. */
 .hljs .hljs-comment, .hljs .hljs-quote{ color:var(--code-cmt); }
@@ -829,6 +838,8 @@ input,textarea{ font-family:inherit; }
 /* 컴포저(게이지·입력창)는 의도적으로 760px 고정 — 본문(.thread)은 창에 비례해
    넓어지지만, 입력 영역까지 따라 늘면 가로로 휑해져 오히려 산만하다(사용자 피드백) */
 .composer-inner{ max-width:760px; margin:0 auto; }
+/* 채팅 모드는 입력창만 살짝 넓혀(760→880px) 넓어진 본문과 균형을 맞춘다 */
+.chat--talk .composer-inner{ max-width:880px; }
 .suggest{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:11px; }
 .suggest .chip{
   font-size:12.5px; color:var(--text-2); background:var(--surface); border:1px solid var(--line-2);
@@ -1622,6 +1633,18 @@ input,textarea{ font-family:inherit; }
 }
 .cm-host.mode-read::before{ background:var(--blue); }
 .cm-host.mode-edit::before{ background:var(--gold); }
+
+/* 변경/일반 보기 토글(Ctrl+D) — 읽기 모드의 변경 tint를 켜고 끈다. 켜짐('변경')=초록(=diff
+   색)으로 또렷이, 꺼짐('일반')=보라로 — 둘 다 또렷한 hue라 읽기 파랑·편집 골드와 안 겹친다.
+   읽기/편집 칩과 같은 알약+점 디자인. */
+.fv-lsp.cm-diff{ border:none; cursor:pointer; font-family:inherit; }
+.fv-lsp.cm-diff::before{ content:''; width:6px; height:6px; border-radius:50%; }
+.fv-lsp.cm-diff.on{ color:var(--green); background:color-mix(in oklab, var(--green) 14%, transparent); }
+.fv-lsp.cm-diff.on::before{ background:var(--green); }
+.fv-lsp.cm-diff.on:hover{ background:color-mix(in oklab, var(--green) 24%, transparent); }
+.fv-lsp.cm-diff.off{ color:var(--violet); background:color-mix(in oklab, var(--violet) 14%, transparent); }
+.fv-lsp.cm-diff.off::before{ background:var(--violet); }
+.fv-lsp.cm-diff.off:hover{ background:color-mix(in oklab, var(--violet) 24%, transparent); }
 
 .cm-host .cm-find{ top:12px; }
 /* 검색 바가 에디터 최상단에 붙어 있어 버튼 툴팁을 위로 띄우면 헤더·cm-host(overflow:hidden)에
@@ -2724,6 +2747,16 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 .sb-mode-btn:hover{ color:var(--text-2); }
 .sb-mode-btn.on{ background:var(--accent); color:var(--on-accent); box-shadow:0 2px 8px -3px var(--accent); }
 .sb-mode-btn.on svg{ opacity:1; }
+/* three modes (채팅 · 에이전트 · 멀티) — tighten spacing so the labels fit the rail width */
+.sb-mode.three{ gap:2px; }
+.sb-mode.three .sb-mode-btn{ gap:4px; padding:7px 3px; font-size:11.5px; }
+.sb-mode.three .sb-mode-btn span{ min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* the mode-tab tooltips sit above the bar; anchor the edge tabs to their own edge so a
+   centered tooltip never clips off the sidebar's left/right (middle tab stays centered) */
+.sb-mode .sb-mode-btn:first-child.has-tip::after{ left:0; transform:translate(0, 3px); }
+.sb-mode .sb-mode-btn:first-child.has-tip:hover::after{ transform:translate(0, 0); }
+.sb-mode .sb-mode-btn:last-child.has-tip::after{ left:auto; right:0; transform:translate(0, 3px); }
+.sb-mode .sb-mode-btn:last-child.has-tip:hover::after{ transform:translate(0, 0); }
 
 /* ============================== MULTI-AGENT WORKSPACE ============================== */
 .multi{ flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg); position:relative; }
@@ -2831,6 +2864,34 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 .ma-p-folder svg:last-child{ color:var(--text-4); flex:0 0 auto; }
 .ma-p-folder-name{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .ma-p-folder:hover{ background:var(--surface-2); color:var(--text-2); box-shadow:var(--hover-ring); }
+/* 시안 B — 폴더 칩이 트리 팝오버를 띄우고 있는 동안의 활성 표시 */
+.ma-p-folder.on{ background:var(--accent-soft); color:var(--text); box-shadow:inset 0 0 0 1px var(--accent-line); }
+.ma-p-folder.on svg:last-child{ transform:rotate(180deg); color:var(--accent-2); }
+
+/* 패널 폴더 칩에서 펼쳐지는 파일 트리 팝오버. body로 포털한 fixed 박스라 패널
+   overflow·확대 오버레이에 안 잘린다(ctx-menu/ScrollTip과 같은 패턴). 트리·검색은
+   단일 모드 탐색기와 같은 .exp-* 클래스를 그대로 재사용한다. */
+.pfm{
+  position:fixed; z-index:320;
+  display:flex; flex-direction:column; max-height:min(440px, 70vh);
+  background:var(--bg); border:1px solid var(--line-2); border-radius:12px;
+  box-shadow:0 18px 44px -16px rgba(40,30,20,0.34), 0 0 0 1px var(--line);
+  overflow:hidden; animation:fade .12s ease both;
+}
+:root[data-theme="dark"] .pfm{ box-shadow:0 22px 50px -18px rgba(0,0,0,0.7), 0 0 0 1px var(--line); }
+.pfm-head{ display:flex; align-items:center; gap:7px; padding:9px 8px 9px 12px; border-bottom:1px solid var(--line); }
+.pfm-fic{ color:var(--accent); display:grid; place-items:center; flex:0 0 auto; }
+.pfm-name{ flex:1; min-width:0; font-size:12px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pfm-swap{ flex:0 0 auto; font-size:10.5px; font-weight:600; color:var(--accent-2); padding:3px 8px; border-radius:7px; transition:background .12s; }
+.pfm-swap:hover{ background:var(--accent-soft); }
+.pfm-x{ flex:0 0 auto; color:var(--text-4); padding:3px; border-radius:6px; display:grid; place-items:center; transition:background .12s,color .12s; }
+.pfm-x:hover{ background:var(--surface-2); color:var(--text-2); }
+.pfm .exp-search{ margin:9px 10px 8px; }
+.pfm .exp-tree{ flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:0 6px 10px; }
+.pfm-blank{ display:flex; flex-direction:column; align-items:center; gap:10px; padding:26px 18px 28px; text-align:center; }
+.pfm-blank-ic{ width:40px; height:40px; border-radius:11px; display:grid; place-items:center; background:var(--surface-2); color:var(--text-3); }
+.pfm-blank-text{ font-size:12px; color:var(--text-3); line-height:1.5; }
+.pfm-blank-btn{ font-size:12px; font-weight:600; color:var(--on-accent); background:var(--accent); padding:7px 16px; border-radius:8px; }
 
 /* context gauge */
 .ma-p-ctx{

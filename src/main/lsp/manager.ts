@@ -527,7 +527,7 @@ class LspManager {
 
   /** Every known language server + its provisioning state, for the settings tab. */
   listServers(): LspServerInfo[] {
-    return SERVERS.map((def) => {
+    const list: LspServerInfo[] = SERVERS.map((def) => {
       const exts = Object.keys(def.exts)
         .map((e) => '.' + e)
         .join(' ')
@@ -538,6 +538,19 @@ class LspManager {
       }
       return { ...base, kind: 'download' as const, state: installState(def.id) }
     })
+    // Verse: open-source UE ships no Verse language server, so there's nothing to spawn — but
+    // the app bundles a custom syntax-highlighting grammar (verseLang.ts). List it as a
+    // bundled, highlight-only language (no install/remove) so it shows up as supported.
+    list.push({
+      id: 'verse',
+      label: 'Verse',
+      langs: 'Verse',
+      exts: '.verse .versetest .vson',
+      kind: 'bundled',
+      state: 'bundled',
+      requires: '구문 강조'
+    })
+    return list
   }
 
   /** Download a server by id (settings tab). */

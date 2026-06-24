@@ -6,6 +6,7 @@ import { useAgentSession, initialSessionState, snapshotForPersist, sameCwd, comm
 import { TitleBar } from './components/TitleBar'
 import { Sidebar, type WorkspaceMode } from './components/Sidebar'
 import { MultiWorkspace } from './components/MultiAgent'
+import { ChatWorkspace } from './components/ChatWorkspace'
 import { getPref, setPref } from './lib/prefs'
 import { ChatHeader, Composer, MessageView, QuestionModal, PermissionModal, SelectionToolbar, WelcomeState, WorkingIndicator, nextMode, pickerModelOf, type PickerState, type ScheduledMsg } from './components/Chat'
 import { AgentPanel, SubAgentModal } from './components/AgentPanel'
@@ -427,7 +428,7 @@ function MainApp({ user }: { user: AppUser }) {
   }
 
   const createChat = (): void => {
-    if (mode === 'multi') return // multi mode owns ⌘N via its own 새 작업 action
+    if (mode !== 'single') return // multi/채팅 own ⌘N via their own workspaces
     if (busy) return // a run streams into the active chat — don't switch mid-flight
     if (activeEmpty) {
       // already sitting on a blank chat — nothing to create, just reset drafts
@@ -766,6 +767,7 @@ function MainApp({ user }: { user: AppUser }) {
   }
 
   const pickFolder = async (): Promise<void> => {
+    if (mode !== 'single') return // ⌘O is a 단일 모드 action — chat/multi have no project folder
     if (busy) return // a folder change is blocked mid-run anyway — don't even open the picker
     const p = await window.api.pickDirectory()
     if (p) requestFolder(p)
@@ -927,6 +929,14 @@ function MainApp({ user }: { user: AppUser }) {
       <div className="win-body">
         {mode === 'multi' ? (
           <MultiWorkspace
+            user={user}
+            usage={usage}
+            onOpenSettings={onOpenSettings}
+            mode={mode}
+            onModeChange={onModeChange}
+          />
+        ) : mode === 'chat' ? (
+          <ChatWorkspace
             user={user}
             usage={usage}
             onOpenSettings={onOpenSettings}

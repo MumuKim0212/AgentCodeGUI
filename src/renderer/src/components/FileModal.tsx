@@ -1546,6 +1546,7 @@ export function FileModal({
   const [cmDirty, setCmDirty] = useState(false) // CM 버퍼에 미저장 변경이 있는가
   const [cmSaved, setCmSaved] = useState(false) // 방금 저장됨 — 잠깐 '저장됨' 표시
   const [cmMode, setCmMode] = useState<'read' | 'edit'>('read') // 변경 파일은 읽기(diff)로 열고 '편집' 눌러 수정
+  const [diffView, setDiffView] = useState(true) // 읽기 모드의 변경 tint(초록/빨강) 표시 — Ctrl+D로 일반 보기와 토글
   const cmRef = useRef<CmEditorHandle>(null)
   // 정의 이동 시 떠나는 파일의 캐럿 위치를 기억 → 뒤로가기로 돌아오면 그 자리로 복원 (CM)
   const posMap = useRef(new Map<string, number>())
@@ -1581,9 +1582,11 @@ export function FileModal({
   // Git 카드에서 온 일회성 diff(ov.diff)가 있으면 세션 diff 대신 그걸 쓴다.
   const diff = ov ? ov.diff : (effPath && diffs?.[effPath.replace(/\\/g, '/')]) || null
   const marks = useMemo(() => (diff ? diffMarksOf(diff) : null), [diff])
-  // 파일이 바뀔 때마다 항상 읽기 모드로 연다(파일 종류 무관 일관). 편집은 Ctrl+E/토글로.
+  // 파일이 바뀔 때마다 항상 읽기 모드 + diff 보기로 연다(파일 종류 무관 일관). 편집은 Ctrl+E,
+  // 일반(무색) 보기는 Ctrl+D로.
   useEffect(() => {
     setCmMode('read')
+    setDiffView(true)
   }, [effPath])
   const isMdFile = !!effPath && fileTypeFor(effPath).lang === 'markdown'
   // CM PoC applies to non-markdown code files only (markdown keeps its render/source
@@ -1595,6 +1598,14 @@ export function FileModal({
   const cmEligible = !isImg && !isMdFile && res != null && res.content != null && !res.truncated && !ov
   // C++ struct 연보라 보정 — 엔진(뷰어/CM) 무관하게 한 번 계산해 양쪽에 내려준다
   const structOv = useCppStructOv(sem, fLang, res?.content ?? '', cwd, effPath ?? '')
+  // diff(변경 tint) 보기 토글 — 읽기 모드의 초록/빨강 diff를 Ctrl+D로 켜고 끈다(편집과 분리).
+  // 마크다운은 자체 '미리보기/변경사항' 토글이 있으니 제외. 끄면 marks를 안 내려보내 diff·
+  // 오버뷰 룰러가 모두 사라지고 평범한(잠긴) 뷰가 된다.
+  const canToggleDiff = !!marks && !isMdFile
+  // diff가 실제로 그려지는 맥락에서만 버튼·단축키가 의미 있다: 비-CM 읽기 뷰어이거나, CM 코드
+  // 파일을 읽기 모드로 보는 중일 때(편집 모드는 어차피 diff를 끄므로 토글이 무의미).
+  const diffVisibleCtx = canToggleDiff && (!cmEligible || cmMode === 'read')
+  const effMarks = canToggleDiff && !diffView ? null : marks
 
   const rz = useResizableModal('viewer.size', path != null, { defaultMaximized: true })
   const z = useZoom('viewer.zoom', path != null)
@@ -1799,6 +1810,21 @@ export function FileModal({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [path, cmEligible])
 
+  // Ctrl/⌘+D → diff(변경 tint) 보기 ↔ 일반(무색) 보기 토글. diff가 그려지는 맥락에서만 동작.
+  // capture로 CM 키맵보다 먼저 잡고, IME가 켜져 있어도 잡히게 물리 키(e.code)도 함께 본다.
+  useEffect(() => {
+    if (!path || !diffVisibleCtx) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.code === 'KeyD' || e.key.toLowerCase() === 'd')))
+        return
+      e.preventDefault()
+      e.stopPropagation()
+      setDiffView((v) => !v)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [path, diffVisibleCtx])
+
   // 질문 패널이 열리면 바로 입력에 포커스
   useEffect(() => {
     if (ask) askInputRef.current?.focus()
@@ -1932,6 +1958,15 @@ export function FileModal({
               {cmMode === 'read' ? '읽기' : '편집'}
             </button>
           )}
+          {diffVisibleCtx && (
+            <button
+              className={'fv-lsp cm-diff htip ' + (diffView ? 'on' : 'off')}
+              onClick={() => setDiffView((v) => !v)}
+              data-tip={diffView ? '일반 보기로 전환 (Ctrl+D)' : '변경 보기로 전환 (Ctrl+D)'}
+            >
+              {diffView ? '변경' : '일반'}
+            </button>
+          )}
           {cmEligible && cmDirty && (
             <button
               className="fv-lsp install htip"
@@ -1980,7 +2015,7 @@ export function FileModal({
             cwd={cwd}
             sem={sem}
             structOv={structOv}
-            marks={marks}
+            marks={effMarks}
             readOnly={cmMode === 'read'}
             zoom={z.zoom}
             lsp={lspStatus === 'ready'}
@@ -2003,7 +2038,7 @@ export function FileModal({
             sem={sem}
             structOv={structOv}
             jump={vs.jump}
-            marks={marks}
+            marks={effMarks}
             mdSource={isMdFile && !!diff && !mdPreview}
             onNavigate={handleNavigate}
           />
