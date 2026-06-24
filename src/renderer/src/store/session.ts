@@ -78,7 +78,73 @@ const CMD_CARDS: Record<string, { title: string; running: string; sub: string | 
   init: { title: 'CLAUDE.md를 정리했어요', running: 'CLAUDE.md를 작성하는 중…', sub: '코드베이스를 분석해 프로젝트 가이드를 작성했습니다.' },
   compact: { title: '대화를 요약했어요', running: '대화를 요약하는 중…', sub: null },
   review: { title: '코드 리뷰를 마쳤어요', running: '코드를 리뷰하는 중…', sub: '변경 사항을 검토했습니다.' },
-  'security-review': { title: '보안 검토를 마쳤어요', running: '보안을 검토하는 중…', sub: '변경 사항의 보안 취약점을 점검했습니다.' }
+  'security-review': { title: '보안 검토를 마쳤어요', running: '보안을 검토하는 중…', sub: '변경 사항의 보안 취약점을 점검했습니다.' },
+  plan: { title: 'Planner를 정리했어요', running: 'Planner를 정리하는 중…', sub: '목표·서브태스크를 .journal/plan/ 에 기록했습니다.' }
+}
+// /plan isn't a CLI built-in — it's this app's Planner (.journal/plan/) feature, so
+// its authoring rules are injected into the prompt before it reaches the engine.
+// This replaces the local-skill approach (.claude/skills/plan/), which only worked
+// inside this repo, so /plan now behaves the same in every cwd.
+export const PLAN_GUIDE = `This project's Planner is an intent layer on top of the automatic work journal (.journal/entries/).
+The journal records "what happened, minute by minute"; the Planner records "which goal that belongs to."
+Per the user's request, directly create or edit goal files under .journal/plan/.
+
+Do not confuse this with the built-in todo tools (TodoWrite/TaskCreate/TaskList) — those
+are temporary, session-scoped lists. The Planner is a permanent, git-tracked set of files
+(.journal/plan/*.md).
+
+Write with ordinary file tools (Write/Edit). Always use an absolute path rooted at the
+current working directory (cwd, i.e. the project root) — never a relative path.
+
+Core rules:
+1. No time buckets. Never invent date- or period-based categories like "weekly goals /
+   daily subtasks," and never estimate durations. Structure is purely a goal → subtask
+   grouping; progress is expressed only via status (checkbox/status field).
+2. No over-structuring. Don't split a goal into an elaborate hierarchy. 1-6 subtasks is
+   usually enough.
+3. No speculative creation. Only create a goal when the user explicitly asks to plan or
+   organize.
+4. Confirm before writing. Briefly propose what should become the goal/subtasks first,
+   and write the file only after the user agrees.
+
+Storage location and format — one goal = one file: .journal/plan/<goalId>-<slug>.md
+- goalId: g-<YYYYMMDD>-<random4> (e.g. g-20260618-ab12)
+- slug: a short kebab-case version of the title
+
+---
+id: g-20260618-ab12
+title: Build the automatic-journal PM layer
+status: active        # active | done | dropped
+created: 2026-06-18T14:32:05+09:00
+---
+## Subtasks
+- [ ] (st-1) Today brief
+- [x] (st-2) Planner foundation
+- [ ] (st-3) Semantic search
+
+## Linked journal entries
+- st-2: 20260618-143205-a1b2, 20260618-150112-cd34
+
+Rules:
+- Subtasks are a "- [ ] (st-N) description" checklist. Done is "- [x]". Never change an
+  existing (st-N) id — that breaks the link. Add new subtasks with the next number.
+- "## Linked journal entries" is optional, format "st-N: <entry id>, ...". A journal entry
+  id is the filename prefix under .journal/entries/<date>/ (YYYYMMDD-HHmmss-xxxx). Link it
+  when you know it; leave it blank if you don't — never invent one.
+- Feel free to add an "## Intent" section or other notes below; the app only reads the
+  two sections above.
+
+Behavior guide:
+- New goal/plan request: propose candidate goal/subtasks → create the file once the user agrees.
+- Progress update: toggle the relevant subtask "- [ ]" → "- [x]", or add a new subtask.
+- Linking a journal entry: if asked to attach a recent/specific entry to a subtask, add its
+  id under "## Linked journal entries".
+- Closing a goal: once everything is done, set front-matter status: done.
+- After writing or editing, report in one line what changed.`
+/** "/plan organize what we've done" → Planner authoring rules + the user's request, for the engine. */
+export function buildPlanPrompt(text: string): string {
+  const userPart = text.trim().slice(5).trim()
+  return `${PLAN_GUIDE}\n\n## User request\n${userPart || "Organize the work done so far into the Planner."}`
 }
 /** "/compact …" → "compact" when it's a card command, else null (normal prompt / skill). */
 export function commandOf(text: string): string | null {

@@ -7,6 +7,7 @@ import {
   sameCwd,
   commandOf,
   commandTitleOf,
+  buildPlanPrompt,
   type SessionState
 } from '../store/session'
 import {
@@ -1163,7 +1164,8 @@ function ActiveSession({
     // commands take no extras; for a normal prompt, list mentions + attachments so the
     // engine reads them reliably (the Agent SDK doesn't auto-expand "@" / images the way the CLI does)
     let promptForEngine = text
-    if (!cmd) {
+    if (cmd === 'plan') promptForEngine = buildPlanPrompt(text)
+    else if (!cmd) {
       const notes: string[] = []
       const mentions = extractMentions(text)
       if (mentions.length)

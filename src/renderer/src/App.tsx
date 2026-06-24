@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AppUser, FileDiff, RunRequest, SubAgentInfo, UsageInfo, UserProfile } from '@shared/protocol'
 import { extractMentions } from './lib/mentions'
 import { useMaximized } from './lib/useMaximized'
-import { useAgentSession, initialSessionState, snapshotForPersist, sameCwd, commandOf, commandTitleOf, type SessionState } from './store/session'
+import { useAgentSession, initialSessionState, snapshotForPersist, sameCwd, commandOf, commandTitleOf, buildPlanPrompt, type SessionState } from './store/session'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar, type WorkspaceMode } from './components/Sidebar'
 import { MultiWorkspace } from './components/MultiAgent'
@@ -615,8 +615,11 @@ function MainApp({ user }: { user: AppUser }) {
     // commands take no extras — only fold mention/attachment notes into normal prompts.
     // `@path` mentions are already inline; the note just lists them so the engine reads
     // the referenced files reliably (the Agent SDK doesn't expand "@" the way the CLI does).
+    // /plan isn't a CLI built-in, so its card text is rewritten into Planner instructions
+    // before it reaches the engine (works in any cwd, no .claude/skills/plan/ needed).
     let promptForEngine = text
-    if (!cmd) {
+    if (cmd === 'plan') promptForEngine = buildPlanPrompt(text)
+    else if (!cmd) {
       const notes: string[] = []
       const mentions = extractMentions(text)
       if (mentions.length)

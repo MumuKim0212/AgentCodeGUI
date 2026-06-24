@@ -11,6 +11,7 @@ import { readUiPrefs, writeUiPrefs } from './uiPrefs'
 import { readChats, writeChats } from './chats'
 import { readMulti, writeMulti } from './maStore'
 import { JournalRecorder, listJournal, readJournal } from './journal'
+import { listPlans, setSubtaskDone, setGoalStatus, addSubtask, PlannerRecorder } from './planner'
 import { listSkills, setSkillEnabled } from './skills'
 import { listMcpServers, setMcpEnabled } from './mcp'
 import { listProjectFiles, listDir } from './files'
@@ -18,7 +19,7 @@ import * as gitApi from './git'
 import { lspManager } from './lsp/manager'
 import { initAutoUpdater, checkForUpdates, quitAndInstall, getUpdateStatus } from './updater'
 import { IPC } from '@shared/protocol'
-import type { EngineEvent, RunRequest, PermissionResponse, QuestionResponse, WindowBounds, ResizeEdge, SnapZone, UsageInfo, UsageWindow, FileReadResult, FileWriteResult, UserProfile, MultiRunRequest, MultiPermissionResponse, MultiQuestionResponse, LspPos } from '@shared/protocol'
+import type { EngineEvent, RunRequest, PermissionResponse, QuestionResponse, WindowBounds, ResizeEdge, SnapZone, UsageInfo, UsageWindow, FileReadResult, FileWriteResult, UserProfile, MultiRunRequest, MultiPermissionResponse, MultiQuestionResponse, LspPos, PlanStatus } from '@shared/protocol'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -345,11 +346,14 @@ function hideSnapPreview(): void {
 }
 
 // 프로젝트-로컬 자동 작업 일지 — 엔진 이벤트를 관찰해 턴 종료 시 .journal/ 에 기록.
+// Planner는 할일 도구('todos' 이벤트)를 가로채 세션별 작업 계획을 .journal/plan/ 에 기록.
 // (읽기 전용인 askEngine은 관찰 대상에서 제외한다.)
 const journal = new JournalRecorder()
+const planner = new PlannerRecorder()
 
 const engine = new ClaudeEngine((event: EngineEvent) => {
   journal.observe('main', event)
+  planner.observe('main', event)
   send(IPC.engineEvent, event)
 })
 // A second, independent engine dedicated to the "/ask" throwaway conversation. It
@@ -367,6 +371,7 @@ function maEngine(panelId: string): ClaudeEngine {
   if (!eng) {
     eng = new ClaudeEngine((event: EngineEvent) => {
       journal.observe(panelId, event)
+      planner.observe(panelId, event)
       send(IPC.maEvent, { panelId, event })
     })
     maEngines.set(panelId, eng)
@@ -518,6 +523,7 @@ async function getUsage(): Promise<UsageInfo> {
 function registerIpc(): void {
   ipcMain.handle(IPC.runStart, async (_e, req: RunRequest) => {
     journal.onRunStart('main', req)
+    planner.onRunStart('main', req)
     return engine.run(req)
   })
   ipcMain.handle(IPC.runCancel, async () => {
@@ -537,6 +543,7 @@ function registerIpc(): void {
   // multi-agent — route each command to its panel's engine (lazily created on first run)
   ipcMain.handle(IPC.maRun, async (_e, req: MultiRunRequest) => {
     journal.onRunStart(req.panelId, req)
+    planner.onRunStart(req.panelId, req)
     return maEngine(req.panelId).run(req)
   })
   ipcMain.handle(IPC.maCancel, async (_e, panelId: string) => {
@@ -556,6 +563,7 @@ function registerIpc(): void {
       maEngines.delete(panelId)
     }
     journal.drop(panelId)
+    planner.drop(panelId)
   })
   ipcMain.handle(IPC.maGet, async () => readMulti())
   ipcMain.handle(IPC.maSave, async (_e, data: unknown) => writeMulti(data))
@@ -565,6 +573,19 @@ function registerIpc(): void {
   ipcMain.handle(IPC.journalRead, async (_e, a: { cwd: string; id: string }) =>
     readJournal(a.cwd || '', a.id)
   )
+  ipcMain.handle(IPC.planList, async (_e, cwd: string) => listPlans(cwd || ''))
+  ipcMain.handle(IPC.planSetSubtask, async (_e, a: { cwd: string; goalId: string; subtaskId: string; done: boolean }) => {
+    setSubtaskDone(a.cwd || '', a.goalId, a.subtaskId, a.done)
+    return listPlans(a.cwd || '')
+  })
+  ipcMain.handle(IPC.planSetStatus, async (_e, a: { cwd: string; goalId: string; status: PlanStatus }) => {
+    setGoalStatus(a.cwd || '', a.goalId, a.status)
+    return listPlans(a.cwd || '')
+  })
+  ipcMain.handle(IPC.planAddSubtask, async (_e, a: { cwd: string; goalId: string; label: string }) => {
+    addSubtask(a.cwd || '', a.goalId, a.label)
+    return listPlans(a.cwd || '')
+  })
 
   ipcMain.handle(IPC.pickDirectory, async () => {
     if (!mainWindow) return null

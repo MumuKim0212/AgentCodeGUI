@@ -34,7 +34,9 @@ import type {
   GitFileAt,
   GitOpResult,
   JournalEntryMeta,
-  JournalEntry
+  JournalEntry,
+  PlanGoal,
+  PlanStatus
 } from './protocol'
 
 /** The surface exposed to the renderer via `window.api` (contextBridge). */
@@ -102,6 +104,18 @@ export interface WindowApi {
     list(cwd: string): Promise<JournalEntryMeta[]>
     /** 한 엔트리의 원문 마크다운 + diff 스냅샷 텍스트 */
     read(cwd: string, id: string): Promise<JournalEntry | null>
+  }
+  /** Planner(.journal/plan/) — 목표→서브태스크→일지 3단 위계. 목표 생성은 에이전트(스킬),
+   *  앱은 읽기 + 가벼운 편집(완료 토글·상태·서브태스크 추가)을 마크다운에 직접 반영. */
+  plan: {
+    /** cwd의 .journal/plan 목표 목록(서브태스크·연결 일지 포함) */
+    list(cwd: string): Promise<PlanGoal[]>
+    /** 서브태스크 완료 토글 → 갱신된 목록 */
+    setSubtask(cwd: string, goalId: string, subtaskId: string, done: boolean): Promise<PlanGoal[]>
+    /** 목표 상태 변경(active/done/dropped) → 갱신된 목록 */
+    setStatus(cwd: string, goalId: string, status: PlanStatus): Promise<PlanGoal[]>
+    /** 서브태스크 추가 → 갱신된 목록 */
+    addSubtask(cwd: string, goalId: string, label: string): Promise<PlanGoal[]>
   }
   /** LSP code intelligence for the in-app viewer (lazy per-project language servers) */
   lsp: {

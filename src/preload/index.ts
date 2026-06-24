@@ -13,7 +13,7 @@ import type {
   MultiQuestionResponse,
   MultiEngineEvent
 } from '@shared/protocol'
-import type { LspPos } from '@shared/protocol'
+import type { LspPos, PlanStatus } from '@shared/protocol'
 import type { WindowApi } from '@shared/api'
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
@@ -60,6 +60,15 @@ const api: WindowApi = {
   journal: {
     list: (cwd: string) => ipcRenderer.invoke(IPC.journalList, cwd),
     read: (cwd: string, id: string) => ipcRenderer.invoke(IPC.journalRead, { cwd, id })
+  },
+  plan: {
+    list: (cwd: string) => ipcRenderer.invoke(IPC.planList, cwd),
+    setSubtask: (cwd: string, goalId: string, subtaskId: string, done: boolean) =>
+      ipcRenderer.invoke(IPC.planSetSubtask, { cwd, goalId, subtaskId, done }),
+    setStatus: (cwd: string, goalId: string, status: PlanStatus) =>
+      ipcRenderer.invoke(IPC.planSetStatus, { cwd, goalId, status }),
+    addSubtask: (cwd: string, goalId: string, label: string) =>
+      ipcRenderer.invoke(IPC.planAddSubtask, { cwd, goalId, label })
   },
   lsp: {
     status: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspStatus, { cwd, relPath }),

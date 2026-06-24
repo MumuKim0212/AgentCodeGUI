@@ -1936,6 +1936,52 @@ input,textarea{ font-family:inherit; }
 .jrn-bcats{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:9px; }
 .jrn-blist{ display:flex; flex-direction:column; gap:2px; }
 .jrn-next{ font-size:12px; color:var(--text-4); padding:4px 2px; }
+.jrn-nextrow{ display:flex; align-items:center; gap:8px; padding:5px 9px; font-size:12.5px; }
+.jrn-nextrow .jrn-tm{ color:var(--text-4); }
+
+/* Planner */
+.jrn-plan{ display:flex; flex-direction:column; gap:16px; }
+.jrn-goal{ border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:var(--surface); }
+.jrn-goal.dim{ opacity:.6; }
+.jrn-ghead{ display:flex; align-items:center; gap:9px; margin-bottom:10px; }
+.jrn-ghead h4{ margin:0; font-size:13.5px; font-weight:700; color:var(--text); }
+.jrn-st{ padding:3px 0 3px 2px; }
+.jrn-strow{ display:flex; align-items:center; gap:9px; }
+.jrn-box{
+  flex:0 0 auto; width:15px; height:15px; border-radius:4px; border:1.5px solid var(--text-4);
+  display:grid; place-items:center; font-size:10px; color:var(--bg); line-height:1;
+}
+.jrn-box.on{ background:var(--green); border-color:var(--green); }
+.jrn-st .jrn-ti{ flex:1; font-size:12.5px; color:var(--text); }
+.jrn-st .jrn-ti.done{ color:var(--text-3); text-decoration:line-through; }
+.jrn-stlinks{ display:flex; flex-wrap:wrap; gap:5px; margin:3px 0 4px 24px; }
+.jrn-link{
+  font-family:var(--font-mono); font-size:10.5px; color:var(--text-3);
+  background:var(--surface-2); border:1px solid var(--line); border-radius:5px; padding:1px 6px; cursor:pointer;
+}
+.jrn-link:hover{ color:var(--text); border-color:var(--accent-line); }
+.jrn-box{ background:transparent; cursor:pointer; padding:0; }
+.jrn-box:hover{ border-color:var(--green); }
+.jrn-statussel{
+  flex:0 0 auto; font-size:11px; color:var(--text-2); background:var(--surface-2);
+  border:1px solid var(--line); border-radius:6px; padding:2px 5px; cursor:pointer;
+}
+.jrn-addst{ display:flex; gap:6px; margin-top:9px; padding-left:24px; }
+.jrn-addst input{
+  flex:1; font-size:12px; color:var(--text); background:var(--bg);
+  border:1px solid var(--line); border-radius:6px; padding:4px 8px;
+}
+.jrn-addst input:focus{ outline:none; border-color:var(--accent-line); }
+.jrn-addst button{
+  flex:0 0 auto; font-size:11.5px; color:var(--text-2); background:var(--surface-2);
+  border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer;
+}
+.jrn-addst button:hover:not(:disabled){ color:var(--text); border-color:var(--accent-line); }
+.jrn-addst button:disabled{ opacity:.5; cursor:default; }
+.jrn-gentries{ margin:8px 0 2px; padding-left:24px; }
+.jrn-glabel{ font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--text-4); }
+.jrn-gentries .jrn-stlinks{ margin:5px 0 0; }
+.jrn-gentries .jrn-link{ max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* 뷰어 헤더의 커밋 해시 칩 (Git 카드에서 연 커밋 시점 파일) */
 .fv-glabel{

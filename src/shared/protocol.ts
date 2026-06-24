@@ -80,6 +80,25 @@ export interface JournalEntry {
   diffText: string | null // diff 스냅샷 원문(unified), 없으면 null
 }
 
+// ── Planner (.journal/plan/) — 목표→서브태스크→일지 3단 위계 ──
+// 시간 버킷 아님: 상태로만 관리(날짜·기간 추정 없음). 에이전트가 마크다운으로
+// 생성, 앱은 읽어 렌더. 일지 연동은 Planner가 매핑(서브태스크→일지 id)으로 관리.
+export type PlanStatus = 'active' | 'done' | 'dropped'
+export interface PlanSubtask {
+  id: string // 예: st-1
+  label: string
+  done: boolean
+  entryIds: string[] // 연결된 일지 entry id 목록
+}
+export interface PlanGoal {
+  id: string // 예: g-20260618-ab12
+  title: string
+  status: PlanStatus
+  created: string | null
+  sessionId: string | null // 자동 캡처 목표면 채팅 세션 id — 같은 세션의 일지가 연결됨
+  subtasks: PlanSubtask[]
+}
+
 // ── Git (탐색기 Git 카드) ─────────────────────────────────────
 export type GitFileStatus = 'M' | 'A' | 'D' | 'R'
 export interface GitChange {
@@ -521,6 +540,10 @@ export const IPC = {
   // journal — 프로젝트-로컬 자동 작업 일지 (.journal/), git으로 따라다님
   journalList: 'journal:list', // cwd → 엔트리 메타 목록(최신순)
   journalRead: 'journal:read', // cwd + id → 엔트리 원문 + diff 스냅샷
+  planList: 'plan:list', // cwd → .journal/plan 목표 목록(서브태스크·연결 일지 포함)
+  planSetSubtask: 'plan:set-subtask', // 서브태스크 완료 토글 → 갱신된 목록
+  planSetStatus: 'plan:set-status', // 목표 상태 변경 → 갱신된 목록
+  planAddSubtask: 'plan:add-subtask', // 서브태스크 추가 → 갱신된 목록
   // app meta + auto-update (electron-updater)
   appGetVersion: 'app:get-version', // the running app version (package.json version)
   appGetInitialDir: 'app:get-initial-dir', // folder passed via "AgentCodeGUI로 열기" at launch (consumed once)

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { JournalEntryMeta, JournalEntry, JournalCategory } from '@shared/protocol'
+import type {
+  JournalEntryMeta,
+  JournalEntry,
+  JournalCategory,
+  PlanGoal,
+  PlanSubtask
+} from '@shared/protocol'
 import { Markdown } from './Markdown'
-import { IconBook, IconClose, IconClock, IconMax, IconRefresh, IconRestore } from './icons'
+import { IconBook, IconClipList, IconClose, IconClock, IconMax, IconRefresh, IconRestore } from './icons'
 import { useResizableModal, ModalResizeHandles } from './resizableModal'
 
 // 프로젝트-로컬 자동 작업 일지(.journal/) 뷰어. 메인 프로세스가 턴 종료마다 남긴
@@ -113,7 +119,8 @@ function buildBrief(metas: JournalEntryMeta[]): Brief {
 export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => void }) {
   const rz = useResizableModal('journal.modal', true)
   const [list, setList] = useState<JournalEntryMeta[] | null>(null)
-  const [view, setView] = useState<'brief' | 'entry'>('brief')
+  const [plans, setPlans] = useState<PlanGoal[] | null>(null)
+  const [view, setView] = useState<'brief' | 'plan' | 'entry'>('brief')
   const [sel, setSel] = useState<string | null>(null)
   const [entry, setEntry] = useState<JournalEntry | null>(null)
 
@@ -122,6 +129,10 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
       .list(cwd)
       .then((r) => setList(r))
       .catch(() => setList([]))
+    window.api.plan
+      .list(cwd)
+      .then((r) => setPlans(r))
+      .catch(() => setPlans([]))
   }, [cwd])
 
   useEffect(() => reload(), [reload])
@@ -174,6 +185,19 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
     setView('entry')
   }
 
+  // Planner 편집 — 마크다운에 반영 후 갱신된 목록으로 교체(best-effort)
+  const planActions = useMemo(
+    () => ({
+      toggle: (g: string, s: string, done: boolean) =>
+        void window.api.plan.setSubtask(cwd, g, s, !done).then(setPlans).catch(() => {}),
+      setStatus: (g: string, status: PlanGoal['status']) =>
+        void window.api.plan.setStatus(cwd, g, status).then(setPlans).catch(() => {}),
+      add: (g: string, label: string) =>
+        void window.api.plan.addSubtask(cwd, g, label).then(setPlans).catch(() => {})
+    }),
+    [cwd]
+  )
+
   return (
     <div
       className="gitm-overlay"
@@ -218,6 +242,16 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
               </span>
               Today 브리프
             </button>
+            <button
+              className={'gitm-item' + (view === 'plan' ? ' on' : '')}
+              onClick={() => setView('plan')}
+            >
+              <span className="ic">
+                <IconClipList size={13} />
+              </span>
+              Planner
+              {plans && plans.length > 0 && <span className="n">{plans.length}</span>}
+            </button>
             <div className="gitm-sec">전체 타임라인</div>
             {empty && <div className="jrn-empty">아직 기록된 일지가 없어요.</div>}
             {groups.map((grp) => (
@@ -243,7 +277,9 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
 
           <div className="jrn-detail scroll">
             {view === 'brief' ? (
-              <BriefView brief={brief} empty={empty} onOpen={openEntry} />
+              <BriefView brief={brief} plans={plans ?? []} empty={empty} onOpen={openEntry} />
+            ) : view === 'plan' ? (
+              <PlanView plans={plans} entries={list ?? []} onOpen={openEntry} actions={planActions} />
             ) : entry ? (
               <>
                 <div className="jrn-meta">
@@ -289,14 +325,21 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
 // ── Today 브리프 ─────────────────────────────────────────────
 function BriefView({
   brief,
+  plans,
   empty,
   onOpen
 }: {
   brief: Brief
+  plans: PlanGoal[]
   empty: boolean
   onOpen: (id: string) => void
 }) {
-  if (empty) return <div className="jrn-empty">아직 기록된 일지가 없어요.</div>
+  // "다음" = 진행 중 목표의 미완 서브태스크 (날짜 아님 — 구조만)
+  const next = plans
+    .filter((g) => g.status === 'active')
+    .flatMap((g) => g.subtasks.filter((s) => !s.done).map((s) => ({ goal: g.title, label: s.label })))
+  if (empty && plans.length === 0)
+    return <div className="jrn-empty">아직 기록된 일지가 없어요.</div>
   return (
     <div className="jrn-brief">
       <BriefSection title="오늘" sub={dayHeader(brief.todayKey)} items={brief.today} onOpen={onOpen} />
@@ -309,9 +352,178 @@ function BriefView({
       <div className="jrn-bsec">
         <div className="jrn-bhead">
           <h4>다음</h4>
+          <span className="jrn-bspacer" />
+          {next.length > 0 && <span className="jrn-bsum">미완 {next.length}</span>}
         </div>
-        <div className="jrn-next">Planner(Tier 2) 연동 예정 — 목표·서브태스크가 여기 모입니다.</div>
+        {next.length === 0 ? (
+          <div className="jrn-next">진행 중 목표의 미완 서브태스크가 없습니다.</div>
+        ) : (
+          <div className="jrn-blist">
+            {next.map((n, i) => (
+              <div key={i} className="jrn-nextrow">
+                <span className="jrn-box" />
+                <span className="jrn-ti">{n.label}</span>
+                <span className="jrn-tm">{n.goal}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+// ── Planner ──────────────────────────────────────────────────
+const PLAN_ST: Record<PlanGoal['status'], { label: string; cls: string }> = {
+  active: { label: '진행', cls: 'feat' },
+  done: { label: '완료', cls: 'chore' },
+  dropped: { label: '중단', cls: 'err' }
+}
+
+interface PlanActions {
+  toggle: (goalId: string, subtaskId: string, done: boolean) => void
+  setStatus: (goalId: string, status: PlanGoal['status']) => void
+  add: (goalId: string, label: string) => void
+}
+
+function PlanView({
+  plans,
+  entries,
+  onOpen,
+  actions
+}: {
+  plans: PlanGoal[] | null
+  entries: JournalEntryMeta[]
+  onOpen: (id: string) => void
+  actions: PlanActions
+}) {
+  if (plans == null) return <div className="jrn-empty">불러오는 중…</div>
+  if (plans.length === 0)
+    return (
+      <div className="jrn-empty">
+        아직 목표가 없습니다. 작업을 시키면 에이전트가 할 일을 잡을 때 그 세션이 목표로
+        자동 기록됩니다 (<code>.journal/plan/</code>).
+      </div>
+    )
+  return (
+    <div className="jrn-plan">
+      {plans.map((g) => (
+        <GoalCard key={g.id} goal={g} entries={entries} onOpen={onOpen} actions={actions} />
+      ))}
+    </div>
+  )
+}
+
+function GoalCard({
+  goal,
+  entries,
+  onOpen,
+  actions
+}: {
+  goal: PlanGoal
+  entries: JournalEntryMeta[]
+  onOpen: (id: string) => void
+  actions: PlanActions
+}) {
+  const [draft, setDraft] = useState('')
+  const done = goal.subtasks.filter((s) => s.done).length
+  const st = PLAN_ST[goal.status] ?? PLAN_ST.active
+  // 이 목표(세션)에 속한 일지 — 자동 캡처 목표는 sessionId로 연결된다
+  const sessionEntries = goal.sessionId
+    ? entries.filter((m) => m.sessionId === goal.sessionId)
+    : []
+  const submit = (): void => {
+    const t = draft.trim()
+    if (!t) return
+    actions.add(goal.id, t)
+    setDraft('')
+  }
+  return (
+    <div className={'jrn-goal' + (goal.status !== 'active' ? ' dim' : '')}>
+      <div className="jrn-ghead">
+        <span className={'jrn-badge ' + st.cls}>{st.label}</span>
+        <h4>{goal.title}</h4>
+        <span className="jrn-bspacer" />
+        {goal.subtasks.length > 0 && (
+          <span className="jrn-bsum">
+            {done}/{goal.subtasks.length}
+          </span>
+        )}
+        <select
+          className="jrn-statussel"
+          value={goal.status}
+          onChange={(e) => actions.setStatus(goal.id, e.target.value as PlanGoal['status'])}
+          title="목표 상태"
+        >
+          <option value="active">진행</option>
+          <option value="done">완료</option>
+          <option value="dropped">중단</option>
+        </select>
+      </div>
+      {goal.subtasks.map((s) => (
+        <SubtaskRow key={s.id} goalId={goal.id} sub={s} onOpen={onOpen} actions={actions} />
+      ))}
+      {sessionEntries.length > 0 && (
+        <div className="jrn-gentries">
+          <span className="jrn-glabel">이 세션 일지 {sessionEntries.length}</span>
+          <div className="jrn-stlinks">
+            {sessionEntries.map((m) => (
+              <button key={m.id} className="jrn-link" onClick={() => onOpen(m.id)} title={m.title}>
+                {timeOf(m.timestamp)} {m.title.length > 18 ? m.title.slice(0, 17) + '…' : m.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="jrn-addst">
+        <input
+          value={draft}
+          placeholder="서브태스크 추가…"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit()
+          }}
+        />
+        <button onClick={submit} disabled={!draft.trim()}>
+          추가
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function SubtaskRow({
+  goalId,
+  sub,
+  onOpen,
+  actions
+}: {
+  goalId: string
+  sub: PlanSubtask
+  onOpen: (id: string) => void
+  actions: PlanActions
+}) {
+  return (
+    <div className="jrn-st">
+      <div className="jrn-strow">
+        <button
+          className={'jrn-box' + (sub.done ? ' on' : '')}
+          onClick={() => actions.toggle(goalId, sub.id, sub.done)}
+          aria-label={sub.done ? '완료 해제' : '완료'}
+        >
+          {sub.done ? '✓' : ''}
+        </button>
+        <span className={'jrn-ti' + (sub.done ? ' done' : '')}>{sub.label}</span>
+      </div>
+      {sub.entryIds.length > 0 && (
+        <div className="jrn-stlinks">
+          {sub.entryIds.map((id) => (
+            <button key={id} className="jrn-link" onClick={() => onOpen(id)} title={id}>
+              {id.slice(9)}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

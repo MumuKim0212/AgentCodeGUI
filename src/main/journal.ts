@@ -26,6 +26,13 @@ import type {
 
 const JOURNAL_DIR = '.journal'
 
+/** 중단/충돌 시 부분 파일이 남지 않도록 같은 폴더의 tmp에 쓰고 rename(같은 볼륨 내 원자적). */
+export function atomicWriteFileSync(file: string, data: string): void {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}-${Date.now()}.tmp`)
+  fs.writeFileSync(tmp, data, 'utf8')
+  fs.renameSync(tmp, file)
+}
+
 // ── 런별 누적 상태 ───────────────────────────────────────────
 interface RunRecord {
   runId: string
@@ -72,12 +79,13 @@ export class JournalRecorder {
         const rec = this.active.get(key)
         if (!rec) break
         this.active.delete(key)
-        // 정책: 실패한 턴 / 파일 변경 없는 턴은 기록하지 않는다(=diff 스냅샷이 핵심).
-        // config.md로 전 턴 기록 전환은 추후(TODO).
+        const root = projectJournalRoot(rec.cwd)
+        const config = root ? readConfig(root) : DEFAULT_RUNTIME_CONFIG
+        // 정책: 실패한 턴은 항상 건너뜀. 변경 없는 턴은 config.md의 recordAllTurns로 전환 가능.
         if (e.isError) break
-        if (rec.files.size === 0) break
+        if (rec.files.size === 0 && !config.recordAllTurns) break
         // best-effort: 일지 기록 실패가 에이전트 실행을 막아선 안 된다.
-        void writeEntry(rec, e).catch((err) =>
+        void writeEntry(rec, e, config).catch((err) =>
           console.error('[journal] 엔트리 기록 실패:', err)
         )
         break
@@ -116,7 +124,8 @@ function mergeDiff(
 // ── 엔트리 기록 ──────────────────────────────────────────────
 async function writeEntry(
   rec: RunRecord,
-  result: Extract<EngineEvent, { type: 'result' }>
+  result: Extract<EngineEvent, { type: 'result' }>,
+  config: RuntimeConfig
 ): Promise<void> {
   const root = projectJournalRoot(rec.cwd)
   if (!root) return // 프로젝트 폴더가 아니면(홈 디렉토리 등) 기록하지 않음
@@ -124,7 +133,7 @@ async function writeEntry(
   const now = new Date()
   const id = `${stamp(now)}-${rand4()}`
   const day = ymd(now)
-  const category = classify(rec.prompt, rec.files)
+  const category = classify(rec.prompt, rec.files, config)
   const title = deriveTitle(rec.prompt, category)
   const changedFiles = [...rec.files.keys()].sort()
 
@@ -135,7 +144,7 @@ async function writeEntry(
 
   // diff 스냅샷 — .journal 루트 기준 상대 경로로 링크(이식성)
   const diffRel = `diffs/${id}.diff`
-  fs.writeFileSync(path.join(diffsDir, `${id}.diff`), serializeDiffs(rec.files), 'utf8')
+  atomicWriteFileSync(path.join(diffsDir, `${id}.diff`), serializeDiffs(rec.files))
 
   ensureConfig(root)
 
@@ -155,7 +164,7 @@ async function writeEntry(
   }
 
   const md = renderEntry(meta, rec, result)
-  fs.writeFileSync(path.join(entriesDir, `${id}-${category}.md`), md, 'utf8')
+  atomicWriteFileSync(path.join(entriesDir, `${id}-${category}.md`), md)
 }
 
 /** 프로젝트별 .journal 루트(절대경로). 홈 디렉토리/빈 cwd면 null(기록 안 함). */
@@ -173,22 +182,27 @@ function projectJournalRoot(cwd: string): string | null {
 }
 
 // ── 5종 분류 (앱-side 휴리스틱) ──────────────────────────────
-// 빗나가면 사용자가 프론트매터 category만 고치면 된다. 키워드의 config.md
-// 오버라이드는 추후(TODO). 우선순위: 위에서부터 첫 매치.
-// 우선순위: 위에서부터 첫 매치. 강한 신호(에러·버그) 먼저, 문서/설정(chore)은
-// feature보다 앞에 둬서 "문서로 작성"이 feature로 새지 않게 한다.
-const RULES: { category: JournalCategory; re: RegExp }[] = [
-  { category: 'error', re: /에러|예외|exception|crash|stack\s*trace|컴파일\s*오류|타입\s*오류|런타임/i },
-  { category: 'bugfix', re: /버그|수정|고치|고침|틀린|잘못|\bfix\b|bug|defect|broken/i },
-  { category: 'refactor', re: /리팩|정리|rename|이름\s*변경|구조\s*개선|중복\s*제거|refactor|cleanup|clean\s*up|simplif|extract/i },
-  { category: 'chore', re: /문서|문서화|readme|주석|코멘트|타이포|typo|오타|버전|bump|설정|config|패키지|의존성|dependency/i },
-  { category: 'feature', re: /추가|신설|구현|기능|만들|작성|feature|implement|support|\badd\b|introduce/i }
-]
+// 빗나가면 사용자가 프론트매터 category만 고치면 된다. config.md의
+// extra_keywords로 카테고리별 키워드를 보강할 수 있다(우선순위: 위에서부터 첫 매치).
+// 강한 신호(에러·버그) 먼저, 문서/설정(chore)은 feature보다 앞에 둬서
+// "문서로 작성"이 feature로 새지 않게 한다.
+const RULE_ORDER: JournalCategory[] = ['error', 'bugfix', 'refactor', 'chore', 'feature']
+const BASE_RULES: Record<JournalCategory, RegExp> = {
+  error: /에러|예외|exception|crash|stack\s*trace|컴파일\s*오류|타입\s*오류|런타임/i,
+  bugfix: /버그|수정|고치|고침|틀린|잘못|\bfix\b|bug|defect|broken/i,
+  refactor: /리팩|정리|rename|이름\s*변경|구조\s*개선|중복\s*제거|refactor|cleanup|clean\s*up|simplif|extract/i,
+  chore: /문서|문서화|readme|주석|코멘트|타이포|typo|오타|버전|bump|설정|config|패키지|의존성|dependency/i,
+  feature: /추가|신설|구현|기능|만들|작성|feature|implement|support|\badd\b|introduce/i
+}
 
-function classify(prompt: string, files: Map<string, FileDiff>): JournalCategory {
+function classify(prompt: string, files: Map<string, FileDiff>, config: RuntimeConfig): JournalCategory {
   // 의도(프롬프트)만 본다 — 모델 요약문엔 '정리/수정/추가' 같은 일반어가 흔해
   // 신호로 쓰면 오분류를 부른다(요약의 "정리한 문서" → refactor 오인 등).
-  for (const r of RULES) if (r.re.test(prompt)) return r.category
+  for (const category of RULE_ORDER) {
+    if (BASE_RULES[category].test(prompt)) return category
+    const extra = config.extraKeywords[category]
+    if (extra && extra.some((kw) => prompt.toLowerCase().includes(kw.toLowerCase()))) return category
+  }
   // 신호 없으면: 새 파일만 있으면 feature, 그 외 chore
   let onlyNew = files.size > 0
   for (const d of files.values()) if (d.tag !== 'new') onlyNew = false
@@ -277,11 +291,46 @@ function serializeDiffs(files: Map<string, FileDiff>): string {
   return blocks.join('\n\n') + '\n'
 }
 
-// ── config.md (앱이 읽는 규칙 — 현재는 문서 + 기본값 안내) ────
+// ── config.md (앱이 읽는 규칙) ────────────────────────────────
+interface RuntimeConfig {
+  recordAllTurns: boolean
+  extraKeywords: Partial<Record<JournalCategory, string[]>>
+}
+
+const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = { recordAllTurns: false, extraKeywords: {} }
+
 function ensureConfig(root: string): void {
   const p = path.join(root, 'config.md')
   if (fs.existsSync(p)) return
-  fs.writeFileSync(p, DEFAULT_CONFIG, 'utf8')
+  atomicWriteFileSync(p, DEFAULT_CONFIG)
+}
+
+/** config.md의 ```yaml 블록을 읽어 기록 정책·분류 키워드 오버라이드를 적용. 없거나 깨졌으면 기본값. */
+function readConfig(root: string): RuntimeConfig {
+  let raw: string
+  try {
+    raw = fs.readFileSync(path.join(root, 'config.md'), 'utf8')
+  } catch {
+    return DEFAULT_RUNTIME_CONFIG
+  }
+  const m = raw.match(/```yaml\s*\n([\s\S]*?)```/)
+  if (!m) return DEFAULT_RUNTIME_CONFIG
+
+  const recordAllTurns = /^\s*record_all_turns:\s*true\s*$/m.test(m[1])
+  const extraKeywords: Partial<Record<JournalCategory, string[]>> = {}
+  const validCategories = new Set<JournalCategory>(RULE_ORDER)
+  const lineRe = /^\s*(\w+):\s*\[(.*)\]\s*$/gm
+  let lm: RegExpExecArray | null
+  while ((lm = lineRe.exec(m[1]))) {
+    const key = lm[1]
+    if (!validCategories.has(key as JournalCategory)) continue
+    const items = lm[2]
+      .split(',')
+      .map((s) => s.trim().replace(/^"|"$/g, '').replace(/^'|'$/g, ''))
+      .filter(Boolean)
+    if (items.length > 0) extraKeywords[key as JournalCategory] = items
+  }
+  return { recordAllTurns, extraKeywords }
 }
 
 const DEFAULT_CONFIG = `# .journal 규칙 (config.md)
@@ -299,14 +348,26 @@ const DEFAULT_CONFIG = `# .journal 규칙 (config.md)
 | \`error\`    | 에러/예외 처리 |
 | \`chore\`    | 잡일(문서·설정·버전 등) |
 
-분류는 프롬프트·요약 키워드로 자동 추정합니다. 빗나가면 해당 엔트리의
-front-matter \`category\`만 고치면 됩니다.
+분류는 프롬프트 키워드로 자동 추정합니다. 빗나가면 해당 엔트리의
+front-matter \`category\`만 고쳐도 되고, 아래 \`extra_keywords\`로 다음 턴부터
+바로잡을 수도 있습니다.
 
-## 기록 정책 (현재 기본값)
-- 파일 변경이 **있는** 턴만 기록합니다.
-- 실패한 턴은 기록하지 않습니다.
+## 설정 (아래 yaml 블록을 직접 수정하세요)
 
-> 이 파일의 값으로 분류 키워드·기록 정책을 오버라이드하는 기능은 예정입니다.
+\`\`\`yaml
+# true면 파일 변경 없는 턴도 기록합니다(기본: false = 변경 있는 턴만).
+record_all_turns: false
+
+# 카테고리별 추가 키워드 — 프롬프트에 포함되면(대소문자 무시) 그 카테고리로 분류합니다.
+# 예: bugfix: ["고쳐줘", "안돼"]
+bugfix: []
+feature: []
+refactor: []
+error: []
+chore: []
+\`\`\`
+
+> 실패한 턴은 항상 기록하지 않습니다(정책으로 바꿀 수 없음).
 `
 
 // ── 읽기 (뷰어용) ────────────────────────────────────────────

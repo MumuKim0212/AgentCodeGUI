@@ -139,7 +139,8 @@ export const SLASH_COMMANDS: SlashCmd[] = [
   { name: 'clear', desc: '대화 기록과 컨텍스트 초기화', icon: IconRefresh },
   { name: 'compact', desc: '대화를 요약해 컨텍스트 절약', icon: IconCompress },
   { name: 'review', desc: '변경 사항 코드 리뷰', icon: IconEye },
-  { name: 'security-review', desc: '변경 사항의 보안 취약점 검토', icon: IconShieldChk }
+  { name: 'security-review', desc: '변경 사항의 보안 취약점 검토', icon: IconShieldChk },
+  { name: 'plan', desc: '목표·서브태스크를 Planner에 기록', icon: IconClipList }
 ]
 
 // ── Typewriter (used for animated assistant messages) ─────────
