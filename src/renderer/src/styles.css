@@ -1982,6 +1982,17 @@ input,textarea{ font-family:inherit; }
 .jrn-glabel{ font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--text-4); }
 .jrn-gentries .jrn-stlinks{ margin:5px 0 0; }
 .jrn-gentries .jrn-link{ max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.jrn-link-pair{ display:inline-flex; align-items:center; gap:2px; }
+.jrn-unlink{
+  flex:0 0 auto; width:14px; height:14px; display:grid; place-items:center; font-size:11px; line-height:1;
+  color:var(--text-4); background:transparent; border:none; cursor:pointer; border-radius:4px;
+}
+.jrn-unlink:hover{ color:var(--red); background:var(--surface-2); }
+.jrn-linksel{
+  font-size:10.5px; color:var(--text-3); background:var(--surface-2);
+  border:1px solid var(--line); border-radius:5px; padding:1px 4px; cursor:pointer; max-width:220px;
+}
+.jrn-linksel:hover{ color:var(--text); border-color:var(--accent-line); }
 
 /* 뷰어 헤더의 커밋 해시 칩 (Git 카드에서 연 커밋 시점 파일) */
 .fv-glabel{

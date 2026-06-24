@@ -116,6 +116,8 @@ export interface WindowApi {
     setStatus(cwd: string, goalId: string, status: PlanStatus): Promise<PlanGoal[]>
     /** 서브태스크 추가 → 갱신된 목록 */
     addSubtask(cwd: string, goalId: string, label: string): Promise<PlanGoal[]>
+    /** 서브태스크에 일지 엔트리 연결/해제(linked) → 갱신된 목록 */
+    linkEntry(cwd: string, goalId: string, subtaskId: string, entryId: string, linked: boolean): Promise<PlanGoal[]>
   }
   /** LSP code intelligence for the in-app viewer (lazy per-project language servers) */
   lsp: {

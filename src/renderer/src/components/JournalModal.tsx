@@ -123,6 +123,7 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
   const [view, setView] = useState<'brief' | 'plan' | 'entry'>('brief')
   const [sel, setSel] = useState<string | null>(null)
   const [entry, setEntry] = useState<JournalEntry | null>(null)
+  const [entryLoaded, setEntryLoaded] = useState(false)
 
   const reload = useCallback(() => {
     window.api.journal
@@ -140,11 +141,15 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
   useEffect(() => {
     if (view !== 'entry' || !sel) {
       setEntry(null)
+      setEntryLoaded(false)
       return
     }
     let live = true
+    setEntryLoaded(false)
     window.api.journal.read(cwd, sel).then((e) => {
-      if (live) setEntry(e)
+      if (!live) return
+      setEntry(e)
+      setEntryLoaded(true)
     })
     return () => {
       live = false
@@ -193,7 +198,9 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
       setStatus: (g: string, status: PlanGoal['status']) =>
         void window.api.plan.setStatus(cwd, g, status).then(setPlans).catch(() => {}),
       add: (g: string, label: string) =>
-        void window.api.plan.addSubtask(cwd, g, label).then(setPlans).catch(() => {})
+        void window.api.plan.addSubtask(cwd, g, label).then(setPlans).catch(() => {}),
+      link: (g: string, s: string, entryId: string, linked: boolean) =>
+        void window.api.plan.linkEntry(cwd, g, s, entryId, linked).then(setPlans).catch(() => {})
     }),
     [cwd]
   )
@@ -312,6 +319,8 @@ export function JournalModal({ cwd, onClose }: { cwd: string; onClose: () => voi
                   </details>
                 )}
               </>
+            ) : entryLoaded ? (
+              <div className="jrn-empty">이 일지를 찾을 수 없어요(삭제되었거나 옮겨졌을 수 있어요).</div>
             ) : (
               <div className="jrn-empty">일지를 불러오는 중…</div>
             )}
@@ -384,6 +393,7 @@ interface PlanActions {
   toggle: (goalId: string, subtaskId: string, done: boolean) => void
   setStatus: (goalId: string, status: PlanGoal['status']) => void
   add: (goalId: string, label: string) => void
+  link: (goalId: string, subtaskId: string, entryId: string, linked: boolean) => void
 }
 
 function PlanView({
@@ -461,7 +471,7 @@ function GoalCard({
         </select>
       </div>
       {goal.subtasks.map((s) => (
-        <SubtaskRow key={s.id} goalId={goal.id} sub={s} onOpen={onOpen} actions={actions} />
+        <SubtaskRow key={s.id} goalId={goal.id} sub={s} entries={sessionEntries} onOpen={onOpen} actions={actions} />
       ))}
       {sessionEntries.length > 0 && (
         <div className="jrn-gentries">
@@ -495,14 +505,18 @@ function GoalCard({
 function SubtaskRow({
   goalId,
   sub,
+  entries,
   onOpen,
   actions
 }: {
   goalId: string
   sub: PlanSubtask
+  entries: JournalEntryMeta[]
   onOpen: (id: string) => void
   actions: PlanActions
 }) {
+  // 같은 세션의 일지 중 이 서브태스크에 아직 안 붙은 것 — "붙이기" 제안 후보
+  const unlinked = entries.filter((m) => !sub.entryIds.includes(m.id))
   return (
     <div className="jrn-st">
       <div className="jrn-strow">
@@ -515,13 +529,41 @@ function SubtaskRow({
         </button>
         <span className={'jrn-ti' + (sub.done ? ' done' : '')}>{sub.label}</span>
       </div>
-      {sub.entryIds.length > 0 && (
+      {(sub.entryIds.length > 0 || unlinked.length > 0) && (
         <div className="jrn-stlinks">
           {sub.entryIds.map((id) => (
-            <button key={id} className="jrn-link" onClick={() => onOpen(id)} title={id}>
-              {id.slice(9)}
-            </button>
+            <span key={id} className="jrn-link-pair">
+              <button className="jrn-link" onClick={() => onOpen(id)} title={id}>
+                {id.slice(9)}
+              </button>
+              <button
+                className="jrn-unlink"
+                onClick={() => actions.link(goalId, sub.id, id, false)}
+                title="연결 해제"
+                aria-label="연결 해제"
+              >
+                ×
+              </button>
+            </span>
           ))}
+          {unlinked.length > 0 && (
+            <select
+              className="jrn-linksel"
+              value=""
+              title="일지 연결하기"
+              onChange={(e) => {
+                if (e.target.value) actions.link(goalId, sub.id, e.target.value, true)
+                e.target.value = ''
+              }}
+            >
+              <option value="">+ 일지 연결…</option>
+              {unlinked.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {timeOf(m.timestamp)} {m.title.length > 24 ? m.title.slice(0, 23) + '…' : m.title}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       )}
     </div>

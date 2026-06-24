@@ -179,6 +179,50 @@ export function setGoalStatus(cwd: string, goalId: string, status: PlanStatus): 
   })
 }
 
+/** "## 연결된 일지" 섹션에서 한 서브태스크의 entry id 목록 줄을 만들거나 고친다. */
+function setLinkLine(md: string, subtaskId: string, entryIds: string[]): string {
+  const lines = md.split('\n')
+  const newLine = `- ${subtaskId}: ${entryIds.join(', ')}`
+  const secIdx = lines.findIndex((l) => /^##.*연결된 일지/.test(l))
+  const lineRe = new RegExp(`^-\\s*${subtaskId}\\s*:`)
+  if (secIdx >= 0) {
+    let end = lines.length
+    for (let i = secIdx + 1; i < lines.length; i++) {
+      if (/^##\s/.test(lines[i])) {
+        end = i
+        break
+      }
+    }
+    const at = lines.slice(secIdx + 1, end).findIndex((l) => lineRe.test(l))
+    if (at >= 0) {
+      if (entryIds.length === 0) lines.splice(secIdx + 1 + at, 1)
+      else lines[secIdx + 1 + at] = newLine
+    } else if (entryIds.length > 0) {
+      lines.splice(end, 0, newLine)
+    }
+    return lines.join('\n')
+  }
+  if (entryIds.length === 0) return md
+  return md.replace(/\s*$/, '') + `\n\n## 연결된 일지\n${newLine}\n`
+}
+
+/** 서브태스크에 일지 엔트리를 연결/해제한다 (중복 추가 무시). */
+export function linkEntry(cwd: string, goalId: string, subtaskId: string, entryId: string, linked: boolean): boolean {
+  if (!SUBTASK_ID_RE.test(subtaskId)) return false
+  return editGoalFile(cwd, goalId, (md) => {
+    const g = parseGoal(md)
+    if (!g) return null
+    const sub = g.subtasks.find((s) => s.id === subtaskId)
+    if (!sub) return null
+    const current = sub.entryIds
+    const next = linked
+      ? current.includes(entryId) ? current : [...current, entryId]
+      : current.filter((id) => id !== entryId)
+    if (next.length === current.length && next.every((v, i) => v === current[i])) return null
+    return setLinkLine(md, subtaskId, next)
+  })
+}
+
 /** 서브태스크 추가 — 다음 (st-N) 번호로 체크리스트 줄을 삽입한다. */
 export function addSubtask(cwd: string, goalId: string, label: string): boolean {
   const clean = label.replace(/[\r\n]+/g, ' ').trim().slice(0, 200)
@@ -219,9 +263,20 @@ interface PSession {
   created: string
 }
 
+// 'todos' 이벤트는 한 턴에서 여러 번 올 수 있어(작업 진행마다 갱신) 매번 디스크에
+// 쓰면 낭비. 짧게 모아 마지막 상태만 쓴다 — run 종료(drop)시에도 미반영분을 흘려보낸다.
+const FLUSH_MS = 1500
+
+interface PendingWrite {
+  session: PSession
+  todos: Todo[]
+  timer: ReturnType<typeof setTimeout>
+}
+
 export class PlannerRecorder {
   private pending = new Map<string, RunRequest>()
   private active = new Map<string, PSession>()
+  private writes = new Map<string, PendingWrite>()
 
   onRunStart(key: string, req: RunRequest): void {
     this.pending.set(key, req)
@@ -243,17 +298,38 @@ export class PlannerRecorder {
     } else if (e.type === 'todos') {
       const s = this.active.get(key)
       if (!s || e.todos.length === 0) return
-      try {
-        writeSessionGoal(s, e.todos)
-      } catch (err) {
-        console.error('[planner] 세션 목표 기록 실패:', err)
-      }
+      this.scheduleWrite(key, s, e.todos)
     }
   }
 
+  /** 디바운스 타이머를 잡고, 자리가 있으면 갈아치운다(마지막 todos만 살아남음). */
+  private scheduleWrite(key: string, session: PSession, todos: Todo[]): void {
+    const existing = this.writes.get(key)
+    if (existing) clearTimeout(existing.timer)
+    const timer = setTimeout(() => this.flush(key), FLUSH_MS)
+    this.writes.set(key, { session, todos, timer })
+  }
+
+  private flush(key: string): void {
+    const w = this.writes.get(key)
+    if (!w) return
+    this.writes.delete(key)
+    try {
+      writeSessionGoal(w.session, w.todos)
+    } catch (err) {
+      console.error('[planner] 세션 목표 기록 실패:', err)
+    }
+  }
+
+  /** run이 끝나기 전에 패널이 사라지면(dispose) 미반영분을 즉시 흘려보낸다. */
   drop(key: string): void {
     this.pending.delete(key)
     this.active.delete(key)
+    const w = this.writes.get(key)
+    if (w) {
+      clearTimeout(w.timer)
+      this.flush(key)
+    }
   }
 }
 

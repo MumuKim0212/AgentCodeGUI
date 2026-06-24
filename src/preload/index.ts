@@ -68,7 +68,9 @@ const api: WindowApi = {
     setStatus: (cwd: string, goalId: string, status: PlanStatus) =>
       ipcRenderer.invoke(IPC.planSetStatus, { cwd, goalId, status }),
     addSubtask: (cwd: string, goalId: string, label: string) =>
-      ipcRenderer.invoke(IPC.planAddSubtask, { cwd, goalId, label })
+      ipcRenderer.invoke(IPC.planAddSubtask, { cwd, goalId, label }),
+    linkEntry: (cwd: string, goalId: string, subtaskId: string, entryId: string, linked: boolean) =>
+      ipcRenderer.invoke(IPC.planLinkEntry, { cwd, goalId, subtaskId, entryId, linked })
   },
   lsp: {
     status: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspStatus, { cwd, relPath }),

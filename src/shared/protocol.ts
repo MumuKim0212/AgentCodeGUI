@@ -544,6 +544,7 @@ export const IPC = {
   planSetSubtask: 'plan:set-subtask', // 서브태스크 완료 토글 → 갱신된 목록
   planSetStatus: 'plan:set-status', // 목표 상태 변경 → 갱신된 목록
   planAddSubtask: 'plan:add-subtask', // 서브태스크 추가 → 갱신된 목록
+  planLinkEntry: 'plan:link-entry', // 서브태스크에 일지 연결/해제 → 갱신된 목록
   // app meta + auto-update (electron-updater)
   appGetVersion: 'app:get-version', // the running app version (package.json version)
   appGetInitialDir: 'app:get-initial-dir', // folder passed via "AgentCodeGUI로 열기" at launch (consumed once)

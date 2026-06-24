@@ -11,7 +11,7 @@ import { readUiPrefs, writeUiPrefs } from './uiPrefs'
 import { readChats, writeChats } from './chats'
 import { readMulti, writeMulti } from './maStore'
 import { JournalRecorder, listJournal, readJournal } from './journal'
-import { listPlans, setSubtaskDone, setGoalStatus, addSubtask, PlannerRecorder } from './planner'
+import { listPlans, setSubtaskDone, setGoalStatus, addSubtask, linkEntry, PlannerRecorder } from './planner'
 import { listSkills, setSkillEnabled } from './skills'
 import { listMcpServers, setMcpEnabled } from './mcp'
 import { listProjectFiles, listDir } from './files'
@@ -586,6 +586,13 @@ function registerIpc(): void {
     addSubtask(a.cwd || '', a.goalId, a.label)
     return listPlans(a.cwd || '')
   })
+  ipcMain.handle(
+    IPC.planLinkEntry,
+    async (_e, a: { cwd: string; goalId: string; subtaskId: string; entryId: string; linked: boolean }) => {
+      linkEntry(a.cwd || '', a.goalId, a.subtaskId, a.entryId, a.linked)
+      return listPlans(a.cwd || '')
+    }
+  )
 
   ipcMain.handle(IPC.pickDirectory, async () => {
     if (!mainWindow) return null
