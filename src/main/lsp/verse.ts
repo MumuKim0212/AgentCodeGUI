@@ -356,6 +356,83 @@ export async function verseDeclHover(absFile: string, line: number, col: number)
   return '```verse\n' + sig + '\n```' + (doc ? '\n\n' + doc : '')
 }
 
+// Indentation depth in levels (tab or 4 spaces = 1 level), to tell a class-body field from a
+// method-body local.
+function verseIndent(line: string): number {
+  let i = 0
+  let lvl = 0
+  for (;;) {
+    if (line[i] === '\t') {
+      lvl++
+      i++
+    } else if (line.startsWith('    ', i)) {
+      lvl++
+      i += 4
+    } else break
+  }
+  return lvl
+}
+
+/**
+ * Synthesize a hover card for a Verse *local variable* or *parameter* — verse-lsp gives no hover
+ * for these at their declaration, and at *use* sites returns only a bare `:type` signature that
+ * the renderer mislabels 'Constant'. So we run this FIRST and override: scan upward from the
+ * hovered line (nearest binding wins → approximate lexical scope) for the word's binding — a
+ * parameter in a single-line function header, a `var`/`set`, or a walrus/typed local. Returns a
+ * `### Parameter | Local Variable | Variable \`name\`` markdown (+ a `Type:` line; `typeHint` =
+ * verse-lsp's inferred type fills it for an untyped `:=` local), or null when the word is NOT a
+ * param/local — including a class-body member FIELD (indentation tells it apart), which is left
+ * to verse-lsp's own hover. Heuristic: multi-line signatures / shadowed names may misresolve.
+ */
+export async function verseLocalHover(
+  absFile: string,
+  line: number,
+  col: number,
+  typeHint?: string
+): Promise<string | null> {
+  let lines: string[]
+  try {
+    lines = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
+  } catch {
+    return null
+  }
+  const word = wordAt(lines[line] ?? '', col)
+  if (!word) return null
+  const card = (kind: string, type?: string): string =>
+    `### ${kind} \`${word}\`` + (type && type.trim() ? `\nType: \`${type.trim()}\`` : '')
+  // A binding at line bi is a class-body member field (not a local) when its indent equals the
+  // body indent of the nearest enclosing class/struct/interface (= header indent + 1). Deeper
+  // ⇒ inside a method ⇒ a true local. No enclosing type ⇒ treat as local (module-level binding).
+  const isMethodLocal = (bi: number): boolean => {
+    for (let j = bi; j >= 0; j--) {
+      if (/^\s*[A-Za-z_]\w*\s*(?:<[^>]*>)*\s*:=\s*(?:class|struct|interface)\b/.test(lines[j] ?? '')) {
+        return verseIndent(lines[bi]) > verseIndent(lines[j]) + 1
+      }
+    }
+    return true
+  }
+  for (let i = line; i >= 0; i--) {
+    const t = (lines[i] ?? '').trim()
+    // parameter — single-line function-definition header `Name(… word : type …)<effects>:ret =`
+    const fh = /^[A-Za-z_]\w*(?:<[^>]*>)*\s*\(([\s\S]*?)\)(?:<[^>]*>)*\s*:[^=]*=/.exec(t)
+    if (fh) {
+      const pm = new RegExp(`(?:^|[(,]\\s*)\\??\\s*${word}\\s*:\\s*([^,)]+)`).exec('(' + fh[1])
+      if (pm) return card('Parameter', pm[1])
+    }
+    // `var` declaration — local only when inside a method body (else it's a member field →
+    // verse-lsp). NOTE: `set X = …` is a re-assignment, not a declaration, so it's excluded — we
+    // keep scanning up to the real `var X` decl (field or local) and label by that.
+    const vm = new RegExp(`^var\\s+${word}\\b\\s*(?::\\s*([^=]+?))?\\s*(?:=|$)`).exec(t)
+    if (vm) return isMethodLocal(i) ? card('Variable', vm[1] || typeHint) : null
+    // walrus local — `word := …` at statement start or in `if (word := …)` / `for (word := …)`
+    if (new RegExp(`(?:^|[(,]\\s*)\\??${word}\\s*:=`).test(t)) return isMethodLocal(i) ? card('Local Variable', typeHint) : null
+    // typed local/field statement — `word : type = …`
+    const tm = new RegExp(`^${word}\\s*:\\s*([^=]+?)\\s*=`).exec(t)
+    if (tm) return isMethodLocal(i) ? card('Local Variable', tm[1]) : null
+  }
+  return null
+}
+
 interface VprojectPkg {
   name: string
   dirPath: string

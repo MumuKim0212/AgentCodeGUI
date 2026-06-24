@@ -13,6 +13,7 @@ import {
   verseProjectRoot,
   verseWorkspaceFolders,
   verseDeclHover,
+  verseLocalHover,
   verseDocAt,
   verseKeywordDoc,
   setVerseExe,
@@ -209,6 +210,30 @@ function killTree(child: ChildProcess): void {
   } catch {
     /* already gone */
   }
+}
+
+// verse-lsp's hover for a type *reference* is the bare `(/path:)name<specs>` with no kind
+// keyword, so the renderer's parseVerseSig labels it the generic 'Type'. Once definition tells
+// us the real kind, prepend it to the fenced signature so the card reads 'Class'/'Struct'/… and
+// shows e.g. `class component<…>`. No-op if the sig already starts with a declaration keyword.
+function injectVerseKind(md: string, kind: string): string {
+  return md.replace(/^```verse\n([^\n]*)/, (full, line: string) =>
+    /^\s*(?:class|struct|enum|interface|module)\b/.test(line) ? full : '```verse\n' + kind + ' ' + line
+  )
+}
+
+// The type from a verse-lsp hover signature (```verse\n(/qual:)name<specs>:type\n```) — fills the
+// Type row of a synthesized local/parameter card (verse-lsp gives a `:type` at use sites). '' when
+// there's no `:type` part.
+function verseHoverType(md: string | null): string {
+  const m = /```verse\n([^\n]*)/.exec(md ?? '')
+  if (!m) return ''
+  let s = m[1].trim()
+  s = s.replace(/^(?:var|set)\s+/, '') // strip leading var/set
+  s = s.replace(/^\(\/[^()]*?:\)\s*/, '') // strip (/Module/Path:)
+  s = s.replace(/^[A-Za-z_]\w*(?:<[^>]*>)*\s*/, '') // strip name + <specs>
+  const t = /^:\s*(.+)$/.exec(s)
+  return t ? t[1].trim() : ''
 }
 
 const SERVERS: ServerDef[] = [
@@ -649,35 +674,51 @@ class LspManager {
       //    이름만 주므로 여기서 덮어쓴다 — 그래서 LSP 응답 유무와 무관하게 가장 먼저 본다.
       const gloss = await verseKeywordDoc(abs, pos.line, pos.character).catch(() => null)
       if (gloss) return { contents: gloss }
-      // 2) 실제 심볼: verse-lsp는 호버에 문서 주석을 안 싣는다 — definition으로 선언을 찾아
-      //    그 위의 `# …`/@doc 주석을 붙인다(내 코드 또는 API digest).
+      // 2) 지역변수·매개변수: verse-lsp는 선언부엔 호버가 없고, 사용처엔 `:type` 시그니처만 줘서
+      //    렌더러가 'Constant'로 오분류한다. 파일을 스캔해 먼저 판별하고 'Parameter'/'Local Variable'
+      //    로 덮어쓴다(클래스 필드는 들여쓰기로 제외 → verse-lsp가 처리). 타입은 선언 주석 또는
+      //    verse-lsp가 사용처에서 준 추론 타입(verseHoverType)으로 채운다.
+      const localSig = await verseLocalHover(abs, pos.line, pos.character, verseHoverType(contents)).catch(() => null)
+      if (localSig) return { contents: localSig }
+      // 3) 실제 심볼: verse-lsp 호버는 `(/path:)name<specs>`만 줄 뿐 종류 키워드(class/struct…)도
+      //    문서 주석도 안 싣는다. definition으로 선언을 찾아 그 줄에서 종류를 읽어 시그니처 앞에
+      //    박고(그래야 카드가 'Type'이 아니라 'Class'로 뜬다) 위의 `# …`/@doc 주석도 붙인다.
       if (contents) {
-        const doc = await this.verseHoverDoc(ctx.rpc, ctx.uri, pos).catch(() => '')
-        return { contents: doc ? contents + '\n\n' + doc : contents }
+        const { doc, kind } = await this.verseDefInfo(ctx.rpc, ctx.uri, pos).catch(() => ({ doc: '', kind: null }))
+        const body = kind ? injectVerseKind(contents, kind) : contents
+        return { contents: doc ? body + '\n\n' + doc : body }
       }
-      // 3) 호버가 아예 없으면 선언부 — 그 줄에서 카드를 합성한다(+ 그 위 문서 주석).
+      // 4) 호버가 아예 없으면 선언부 — 그 줄에서 카드를 합성한다(+ 그 위 문서 주석).
       const declSig = await verseDeclHover(abs, pos.line, pos.character).catch(() => null)
       if (declSig) return { contents: declSig }
     }
     return contents ? { contents } : null
   }
 
-  /** The doc comment above a Verse symbol's declaration, found via textDocument/definition. */
-  private async verseHoverDoc(rpc: StdioRpc, uri: string, pos: LspPos): Promise<string> {
+  /**
+   * Follow textDocument/definition for a Verse symbol and read its declaration: the doc comment
+   * above it, plus the declaration kind (class/struct/enum/interface/module) when the decl line
+   * is a type definition — so the hover card can label an external type reference 'Class' rather
+   * than the generic 'Type'. Works on the user's code and on API digests.
+   */
+  private async verseDefInfo(rpc: StdioRpc, uri: string, pos: LspPos): Promise<{ doc: string; kind: string | null }> {
     const d = await rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
       textDocument: { uri },
       position: pos
     })
     const loc = Array.isArray(d) ? d[0] : d
-    if (!loc) return ''
+    if (!loc) return { doc: '', kind: null }
     const turi = loc.uri ?? loc.targetUri
     const range = loc.range ?? loc.targetSelectionRange ?? loc.targetRange
     const line = range?.start?.line
-    if (!turi || !turi.startsWith('file:') || typeof line !== 'number') return ''
+    if (!turi || !turi.startsWith('file:') || typeof line !== 'number') return { doc: '', kind: null }
     try {
-      return await verseDocAt(fileURLToPath(turi), line)
+      const file = fileURLToPath(turi)
+      const lines = (await fsp.readFile(file, 'utf8')).split(/\r?\n/)
+      const km = /:=\s*(class|struct|enum|interface|module)\b/.exec(lines[line] ?? '')
+      return { doc: await verseDocAt(file, line), kind: km ? km[1] : null }
     } catch {
-      return ''
+      return { doc: '', kind: null }
     }
   }
 

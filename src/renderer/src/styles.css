@@ -838,15 +838,16 @@ input,textarea{ font-family:inherit; }
 /* Verse: @속성(@editable 등)은 pal-rider에서 meta=클래스색(보라)이라 구분이 안 됐다 —
    코랄(따뜻한 주황-적)로 분리한다. (<지정자>는 .specifier_ 규칙이 구조체색으로 더 높은
    특이도로 이긴다.) */
-.pal-verse{ --verse-attr:#c0573a; }
-:root[data-theme="dark"] .pal-verse{ --verse-attr:#e29178; }
+.pal-verse{ --verse-attr:#c0573a; --verse-spec:#5f63a8; }
+:root[data-theme="dark"] .pal-verse{ --verse-attr:#e29178; --verse-spec:#a9addb; }
 .pal-verse .hljs-meta{ color:var(--verse-attr); }
-/* Verse: <…> 지정자(<public>·<override>·<transacts>·<computes>…)는 클래스명과 같은
-   보라(--code-type)라 구분이 안 됐다 — 구조체 색(--code-type-2)으로 분리한다. verseLang의
+/* Verse: <…> 지정자(<public>·<override>·<transacts>·<computes>…)는 원래 클래스색(보라)이라
+   구조체색(--code-type-2)으로 분리했었는데, struct/enum이 그 구조체색을 쓰게 되면서 겹쳤다 —
+   지정자 전용 슬레이트(--verse-spec)로 옮긴다(속성 코랄과 대비되는 차분한 보조색). verseLang의
    'meta.specifier' 서브스코프가 `specifier_`(Verse 전용)를 달아줘 @어트리뷰트(plain meta)는
    건드리지 않는다. 특이도 0,3,0 → 위의 .hljs .hljs-meta(0,2,0)를 이긴다. 모든 코드 표면 커버. */
 .fvl .hljs-meta.specifier_, .cm-content .hljs-meta.specifier_,
-.hljs .hljs-meta.specifier_, .lsp-hover .hljs-meta.specifier_{ color:var(--code-type-2, var(--code-type)); }
+.hljs .hljs-meta.specifier_, .lsp-hover .hljs-meta.specifier_{ color:var(--verse-spec, var(--code-type-2)); }
 
 /* composer */
 .composer-wrap{ flex:0 0 auto; padding:14px 28px 18px; }
@@ -1561,7 +1562,7 @@ input,textarea{ font-family:inherit; }
    색은 컨테이너(.fv-code)의 언어별 팔레트 변수를 따라간다. type-2/event/kw/dep/esc/
    inactive/plain은 Rider 언어(C#·C++) 전용 분류 — riderSemClass가 붙인다 */
 .fvl .sem-type, .lsp-hover .sem-type{ color:var(--code-type); }
-.fvl .sem-type2, .lsp-hover .sem-type2{ color:var(--code-type-2, var(--code-type)); }
+.fvl .sem-type2, .lsp-hover .sem-type2, .hljs .sem-type2{ color:var(--code-type-2, var(--code-type)); }
 .fvl .sem-fn, .lsp-hover .sem-fn{ color:var(--code-fn); }
 .fvl .sem-member, .lsp-hover .sem-member{ color:var(--code-member); }
 .fvl .sem-const, .lsp-hover .sem-const{ color:var(--code-const); }

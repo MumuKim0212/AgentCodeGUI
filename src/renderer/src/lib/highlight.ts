@@ -1,5 +1,6 @@
 import hljs from 'highlight.js/lib/common'
 import { verse } from './verseLang'
+import { verseScopes, recolorVerse } from './verseMembers'
 
 // Epic's Verse (.verse) isn't part of the hljs common bundle — register our corpus-based
 // grammar once so highlightCode('verse') colours it like any built-in language.
@@ -15,7 +16,13 @@ function escapeHtml(s: string): string {
 // file viewer card so both produce identically-themed `.hljs-*` token markup.
 export function highlightCode(code: string, lang: string): string {
   try {
-    if (lang && hljs.getLanguage(lang)) return hljs.highlight(code, { language: lang }).value
+    if (lang && hljs.getLanguage(lang)) {
+      const value = hljs.highlight(code, { language: lang }).value
+      // Verse has no LSP semantic tokens; recover member fields by a whole-file scan and keep
+      // only those identifiers on the member colour (locals/params/uses of non-members drop to
+      // default). Both the viewer and the editor go through here, so both get it.
+      return lang === 'verse' ? recolorVerse(value, verseScopes(code)) : value
+    }
     return hljs.highlightAuto(code).value
   } catch {
     return escapeHtml(code)
