@@ -136,17 +136,10 @@ export function verse(hljs: HLJSApi): Language {
     match: new RegExp(`(?<=\\.)${NOT_KW}[A-Za-z_]\\w*`),
     relevance: 0
   }
-  // Verse convention: TYPES (class/struct/enum/interface) are snake_case, while functions,
-  // members, parameters and locals are PascalCase. So an all-lowercase identifier that isn't a
-  // keyword is a TYPE reference — a superclass `class<…>(component)`, an annotation `:agent`,
-  // `?cancelable`, a generic arg, etc. Colour it like a type. (Built-in primitives int/float/…
-  // are keywords and stay keyword-coloured; the snake_case type-DEFINITION name is already
-  // claimed by TYPE_DEF above.) Listed before VARIABLE so lowercase type uses win.
-  const TYPE_USE: Mode = {
-    scope: 'type',
-    match: new RegExp(`\\b${NOT_KW}[a-z][a-z0-9_]*\\b`),
-    relevance: 0
-  }
+  // NOTE: we deliberately do NOT guess "lowercase identifier = type" here. That convention
+  // (types snake_case, the rest PascalCase) is unenforced, so it mis-colours lowercase locals
+  // (`abs := 10`) as types. Instead every plain identifier is a VARIABLE (default colour) and
+  // recolorVerse promotes only the ones CONFIRMED to be types/members by the registry + file scan.
   // Every other identifier — PascalCase field, parameter, local, variable read — is a VARIABLE.
   // Verse exposes no info to split member from local or definition from use, so they share one
   // colour (the member-field recolor pass then keeps members and drops the rest). NOT_KW keeps
@@ -179,7 +172,6 @@ export function verse(hljs: HLJSApi): Language {
       TYPE_DEF,
       FUNCTION,
       MEMBER_ACCESS,
-      TYPE_USE,
       VARIABLE
     ]
   }

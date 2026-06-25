@@ -16,12 +16,24 @@ import {
   verseLocalHover,
   verseDocAt,
   verseKeywordDoc,
+  verseSymbolDoc,
   setVerseExe,
   clearVerseExe
 } from './verse'
+import {
+  verseMemberContext,
+  verseHasType,
+  verseTypeFromHover,
+  verseResolveTypeRegex,
+  verseTypeMembers,
+  verseRegistry as verseMemberDbRegistry
+} from './verseMemberDb'
 import { getCached, setCached, gcDeadBuckets } from './semcache'
 import { APP_HOME } from '../engine/versions'
 import type {
+  LspCompletionItem,
+  LspCompletionList,
+  VerseRegistry,
   LspHoverResult,
   LspInstallProgress,
   LspLocation,
@@ -172,6 +184,14 @@ interface ServerHandle {
   // the server's semanticTokens legend (token type names + modifier names) from the
   // initialize result — null when the server doesn't do semantic highlighting
   semLegend: { types: string[]; mods: string[] } | null
+  // the server's completion trigger characters (e.g. Verse '.') from the initialize
+  // result's completionProvider — [] when it completes but lists no triggers, null when
+  // the server has no completion provider at all (so we skip the request entirely)
+  complTriggers: string[] | null
+  // id of the most recent in-flight textDocument/completion (interactive-while-typing). A
+  // newer keystroke cancels it via $/cancelRequest so the server isn't stuck re-parsing the
+  // full document for a popup the user has already typed past. undefined when none in flight.
+  lastComplId?: number
 }
 
 // Resolve a file that ships in the app's node_modules. In a packaged build the
@@ -375,6 +395,60 @@ interface RawLocation {
   range?: RawRange
   targetSelectionRange?: RawRange
   targetRange?: RawRange
+}
+
+interface RawCompletionItem {
+  label?: string
+  kind?: number
+  detail?: string
+  documentation?: string | { kind?: string; value?: string }
+  insertText?: string
+  insertTextFormat?: number // 2 = snippet (LSP `${1:..}` placeholders)
+  textEdit?: { newText?: string }
+  sortText?: string
+  filterText?: string
+}
+// textDocument/completion returns either a bare item array or a CompletionList wrapper
+type RawCompletion = RawCompletionItem[] | { items?: RawCompletionItem[]; isIncomplete?: boolean } | null
+
+/** Normalize a server completion response into our flat list (null when there's nothing usable). */
+function mapCompletion(r: RawCompletion): LspCompletionList | null {
+  if (!r) return null
+  const rawItems = Array.isArray(r) ? r : Array.isArray(r.items) ? r.items : []
+  const isIncomplete = Array.isArray(r) ? false : !!r.isIncomplete
+  const items: LspCompletionItem[] = []
+  for (const it of rawItems) {
+    if (!it || typeof it.label !== 'string') continue
+    const doc = typeof it.documentation === 'string' ? it.documentation : it.documentation?.value
+    items.push({
+      label: it.label,
+      kind: typeof it.kind === 'number' ? it.kind : undefined,
+      detail: typeof it.detail === 'string' ? it.detail : undefined,
+      documentation: doc || undefined,
+      insertText: it.textEdit?.newText ?? it.insertText ?? it.label,
+      snippet: it.insertTextFormat === 2,
+      sortText: it.sortText,
+      filterText: it.filterText
+    })
+  }
+  return items.length ? { items, isIncomplete } : null
+}
+
+/** The character immediately left of an LSP position in `text` — for trigger-char detection. */
+function charBefore(text: string, pos: LspPos): string {
+  const lines = text.split('\n')
+  const line = lines[pos.line]
+  if (line == null || pos.character <= 0) return ''
+  return line.charAt(pos.character - 1)
+}
+
+/** Flatten a raw LSP hover result's `contents` (string | {value} | array) to a plain string. */
+function hoverContentString(h: { contents?: unknown } | null): string {
+  const c = h?.contents
+  if (!c) return ''
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) return c.map((x) => (typeof x === 'string' ? x : ((x as { value?: string })?.value ?? ''))).join('\n')
+  return (c as { value?: string }).value ?? ''
 }
 
 class LspManager {
@@ -670,6 +744,9 @@ class LspManager {
     const abs = this.resolve(cwd, relPath)
     const def = abs ? serverDefFor(abs) : null
     if (def?.id === 'verse' && abs) {
+      // 0) `?` 옵션 연산자 — verse-lsp도 글로서리(wordAt)도 기호는 못 잡으므로 위치로 판별해 설명.
+      const qdoc = await verseSymbolDoc(abs, pos.line, pos.character).catch(() => null)
+      if (qdoc) return { contents: qdoc }
       // 1) 키워드·지정자·속성·내장 타입은 우리 용어집 설명으로. 내장 타입(int/void…)은 LSP가
       //    이름만 주므로 여기서 덮어쓴다 — 그래서 LSP 응답 유무와 무관하게 가장 먼저 본다.
       const gloss = await verseKeywordDoc(abs, pos.line, pos.character).catch(() => null)
@@ -767,6 +844,127 @@ class LspManager {
     return out
   }
 
+  /**
+   * Completion candidates at an LSP position. Unlike hover/definition — which query the
+   * SAVED file — completion is interactive-while-typing: the partial word and any unsaved
+   * edits aren't on disk yet. So the renderer hands us `text` (the live CM buffer) and we
+   * push it to the server with a didChange right before asking, so the server's view, the
+   * cursor position, and the partial token all line up with what the user sees on screen.
+   * Returns null when the file's server has no completion provider (e.g. color-only Verse).
+   */
+  async completion(cwd: string, relPath: string, pos: LspPos, text: string): Promise<LspCompletionList | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return null
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    if (def.kind === 'external' && !def.command('')) return null
+    const root = def.rootFor?.(abs, cwd) ?? cwd
+    const s = this.ensure(def, root)
+    if (!s) return null
+    try {
+      await s.ready
+    } catch {
+      return null
+    }
+    if (s.complTriggers == null) return null // server advertised no completionProvider
+    const uri = this.syncBuffer(s, def, abs, text)
+    // when the char left of the cursor is one of the server's trigger chars (Verse '.'),
+    // tell the server it was a trigger-character completion (2) — some servers only return
+    // member lists in that mode; otherwise it's an explicit/typed invocation (1)
+    const before = charBefore(text, pos)
+    const ctx =
+      before && s.complTriggers.includes(before)
+        ? { triggerKind: 2, triggerCharacter: before }
+        : { triggerKind: 1 }
+    // a newer keystroke obsoletes any completion still in flight — cancel it so the server
+    // drops the stale full-document parse instead of working through a backlog
+    if (s.lastComplId != null) s.rpc.cancel(s.lastComplId)
+    const { id, promise } = s.rpc.requestId<RawCompletion>(
+      'textDocument/completion',
+      { textDocument: { uri }, position: pos, context: ctx },
+      15000
+    )
+    s.lastComplId = id
+    let r = await promise.catch(() => null)
+    if (s.lastComplId === id) s.lastComplId = undefined
+    if (def.id === 'verse') {
+      // Member access → resolve the receiver's type ACCURATELY (verse-lsp hover tracks it), then
+      // enumerate that type's members from our scan map (verse-lsp won't list them). A known type
+      // name resolves instantly; hover handles vars/params/members/chains; regex is the cold/fail
+      // fallback. Show ONLY these members — the LSP's lexical-scope items are noise for a `.`.
+      const mctx = verseMemberContext(text, pos)
+      if (mctx) {
+        let type = verseHasType(root, text, mctx.receiver) ? mctx.receiver : null
+        if (!type) {
+          const hov = await s.rpc
+            .request<{ contents?: unknown } | null>(
+              'textDocument/hover',
+              { textDocument: { uri }, position: mctx.receiverPos },
+              4000
+            )
+            .catch(() => null)
+          type = verseTypeFromHover(hoverContentString(hov))
+        }
+        if (!type) type = verseResolveTypeRegex(root, text, mctx.receiver, pos.line)
+        if (type) {
+          const members = verseTypeMembers(root, text, type)
+          if (members.length) return { items: members, isIncomplete: false }
+        }
+      }
+      // Identifier completion on a freshly-opened file: verse-lsp returns an EMPTY list while it's
+      // still compiling (cold start) — its scope is never genuinely empty. Retry briefly until it
+      // populates, so `M`→`Mix` works on the first try instead of needing several retries.
+      const isEmpty = (x: RawCompletion): boolean => !x || (Array.isArray(x) ? x.length === 0 : !x.items?.length)
+      let tries = 0
+      for (; tries < 6 && isEmpty(r); tries++) {
+        await new Promise((res) => setTimeout(res, 120))
+        if (s.lastComplId != null) s.rpc.cancel(s.lastComplId)
+        const rr = s.rpc.requestId<RawCompletion>(
+          'textDocument/completion',
+          { textDocument: { uri }, position: pos, context: ctx },
+          15000
+        )
+        s.lastComplId = rr.id
+        r = await rr.promise.catch(() => null)
+        if (s.lastComplId === rr.id) s.lastComplId = undefined
+      }
+    }
+    return mapCompletion(r)
+  }
+
+  /**
+   * Eagerly open a file on its LSP server (didOpen) the moment the viewer shows it, so the
+   * server finishes compiling/indexing BEFORE the user types. Without this the first
+   * completion is itself the file's first didOpen — the server hasn't indexed yet and returns
+   * an empty list, so the popup looks broken until a few retries later (cold start). Fire-and-
+   * forget; mirrors completion()'s guards and is a no-op for files with no server.
+   */
+  async warm(cwd: string, relPath: string): Promise<void> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return
+    if (def.kind === 'external' && !def.command('')) return
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return
+    try {
+      await s.ready
+    } catch {
+      return
+    }
+    await this.openDoc(s, def, abs).catch(() => {})
+  }
+
+  /** Accurate Verse type registry for a file's project (for the renderer's semantic colouring). */
+  verseRegistry(cwd: string, relPath: string): VerseRegistry | null {
+    const abs = this.resolve(cwd, relPath)
+    if (!abs || serverDefFor(abs)?.id !== 'verse') return null
+    const root = verseProjectRoot(abs) ?? cwd
+    return root ? verseMemberDbRegistry(root) : null
+  }
+
   /** Kill every server (app quit). */
   disposeAll(): void {
     for (const s of this.servers.values()) {
@@ -830,6 +1028,7 @@ class LspManager {
       docs: new Map(),
       diedAt: 0,
       semLegend: null,
+      complTriggers: null,
       projectInitPending: !!def.awaitsProjectInit,
       progressPct: null
     }
@@ -854,7 +1053,10 @@ class LspManager {
     const folders = customFolders ?? [{ uri: rootUri, name: path.basename(root) }]
     handle.ready = rpc
       .request<{
-        capabilities?: { semanticTokensProvider?: { legend?: { tokenTypes?: string[]; tokenModifiers?: string[] } } }
+        capabilities?: {
+          semanticTokensProvider?: { legend?: { tokenTypes?: string[]; tokenModifiers?: string[] } }
+          completionProvider?: { triggerCharacters?: string[] }
+        }
       }>(
         'initialize',
         {
@@ -865,6 +1067,12 @@ class LspManager {
             textDocument: {
               hover: { contentFormat: ['markdown', 'plaintext'] },
               definition: {},
+              // completion isn't wired for every server yet, but declaring the client
+              // capability is harmless and lets servers that gate completion on it (and
+              // their snippet/markdown-doc formats) light up — Verse's verse-lsp included
+              completion: {
+                completionItem: { snippetSupport: true, documentationFormat: ['markdown', 'plaintext'] }
+              },
               synchronization: { dynamicRegistration: false },
               semanticTokens: {
                 requests: { full: true },
@@ -896,6 +1104,10 @@ class LspManager {
           Array.isArray(types) && types.length
             ? { types, mods: Array.isArray(legend?.tokenModifiers) ? legend.tokenModifiers : [] }
             : null
+        // record the completion trigger chars (Verse: '.'). null = no completionProvider →
+        // completion() short-circuits so we never round-trip to a server that can't complete.
+        const cp = res?.capabilities?.completionProvider
+        handle.complTriggers = cp ? (Array.isArray(cp.triggerCharacters) ? cp.triggerCharacters : []) : null
         rpc.notify('initialized', {})
         def.afterInitialized?.(rpc, path.resolve(root))
         handle.status = 'ready'
@@ -948,6 +1160,42 @@ class LspManager {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Push the LIVE editor buffer to the server (didOpen if new, else didChange) so the very
+   * next request sees the user's unsaved edits + partial word. Used by completion, which —
+   * unlike the disk-synced openDoc — must reflect the on-screen buffer, not the saved file.
+   * We mark the disk-sync tracker stale (mtime/size = -1) so the next openDoc (hover/def on a
+   * later keystroke) re-reads disk and re-syncs, instead of trusting an unchanged mtime and
+   * leaving the server stuck on this buffer version.
+   */
+  private syncBuffer(s: ServerHandle, def: ServerDef, abs: string, text: string): string {
+    const uri = pathToFileURL(abs).href
+    const cur = s.docs.get(uri)
+    if (!cur) {
+      s.docs.set(uri, { version: 1, mtimeMs: -1, size: -1 })
+      const ext = path.extname(abs).slice(1).toLowerCase()
+      s.rpc.notify('textDocument/didOpen', {
+        textDocument: { uri, languageId: def.exts[ext] ?? Object.values(def.exts)[0], version: 1, text }
+      })
+      if (s.docs.size > MAX_OPEN_DOCS) {
+        const oldest = s.docs.keys().next().value
+        if (oldest && oldest !== uri) {
+          s.docs.delete(oldest)
+          s.rpc.notify('textDocument/didClose', { textDocument: { uri: oldest } })
+        }
+      }
+    } else {
+      cur.version++
+      cur.mtimeMs = -1
+      cur.size = -1
+      s.rpc.notify('textDocument/didChange', {
+        textDocument: { uri, version: cur.version },
+        contentChanges: [{ text }] // no range → full-content replace
+      })
+    }
+    return uri
   }
 
   /**

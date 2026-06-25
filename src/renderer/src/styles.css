@@ -1624,6 +1624,99 @@ input,textarea{ font-family:inherit; }
    카드 위치는 CM 툴팁이 잡으므로 .lsp-hover의 position:fixed를 static으로 덮는다. */
 .cm-tooltip.cm-tooltip-hover{ background:transparent !important; border:none !important; }
 .cm-tooltip .cm-lsp-hover{ position:static; }
+
+/* ── CM 자동완성 팝업 — 호버 카드처럼 글래스(반투명 + blur)하고 모던하게.
+   CM 기본 크롬을 덮는다: 두 클래스 셀렉터로 특이도를 맞추고, 핵심 시각 속성은 주입 순서와
+   무관하도록 !important(.cm-tooltip-hover와 같은 방식). 라벨은 앱 시그니처 산세리프(Wanted
+   Sans), 종류는 CM 기본 수학 글리프를 죽이고 코드 팔레트 컬러 도트로 표시. */
+.cm-tooltip.cm-tooltip-autocomplete{
+  background:color-mix(in oklab, var(--bg) 74%, transparent) !important;
+  backdrop-filter:blur(18px) saturate(1.35); -webkit-backdrop-filter:blur(18px) saturate(1.35);
+  border:1px solid var(--line-2) !important; border-radius:16px;
+  box-shadow:0 24px 56px -20px rgba(30,22,14,.5), 0 3px 12px -5px rgba(30,22,14,.22);
+  padding:7px; overflow:hidden; animation:fade .12s ease both;
+}
+/* 항목은 코드 식별자 → JetBrains Mono(--font-mono, 앱의 code/paths 전용 폰트). docs 패널만 산세리프 */
+.cm-tooltip.cm-tooltip-autocomplete > ul{
+  max-height:min(360px, 52vh); font-family:var(--font-mono); font-size:14px;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li{
+  display:flex; align-items:center; padding:9px 14px; margin:1px 0; border-radius:10px; overflow:hidden;
+  color:var(--text-2); line-height:1.5; cursor:default; transition:background .08s ease;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]{
+  background:color-mix(in oklab, var(--accent) 16%, transparent) !important; color:var(--text);
+}
+/* 종류 = 코드 팔레트 색의 작은 라운드 배지 + 종류 글자(색만으론 구분이 어려워 글자로 한눈에:
+   F함수·M메서드·V변수·P필드·C클래스·S구조체·I인터페이스·E열거·T타입·K키워드·O연산자·N모듈).
+   글자색=팔레트, 배경=옅은 틴트. CM 기본 수학 글리프(ƒ ○ ◌ 𝑥 …)는 덮어쓴다. */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon{
+  width:17px; height:17px; flex:0 0 auto; box-sizing:border-box; padding:0; margin:0 12px 0 2px; opacity:1;
+  display:flex; align-items:center; justify-content:center;
+  border-radius:5px; font-family:var(--font-mono); font-size:10px; font-weight:700; line-height:1;
+  color:var(--text-3); background:color-mix(in oklab, var(--text-4) 15%, transparent);
+}
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon::after{ content:''; font-size:10px; line-height:1; }
+/* 색 (글자색 = 코드 팔레트, 배경 = 동색 틴트) */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-function,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-method{ color:var(--code-fn); background:color-mix(in oklab, var(--code-fn) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-variable{ color:var(--code-num); background:color-mix(in oklab, var(--code-num) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-property{ color:var(--code-member); background:color-mix(in oklab, var(--code-member) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-class,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-type,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-namespace{ color:var(--code-type); background:color-mix(in oklab, var(--code-type) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-struct,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-interface{ color:var(--code-type-2, var(--code-type)); background:color-mix(in oklab, var(--code-type-2, var(--code-type)) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-enum,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-constant{ color:var(--code-const, var(--code-member)); background:color-mix(in oklab, var(--code-const, var(--code-member)) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-keyword,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-operator{ color:var(--code-kw); background:color-mix(in oklab, var(--code-kw) 16%, transparent); }
+/* 글자 (종류 약자) */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-function::after{ content:'F'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-method::after{ content:'M'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-variable::after{ content:'V'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-property::after{ content:'P'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-class::after{ content:'C'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-struct::after{ content:'S'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-interface::after{ content:'I'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-enum::after{ content:'E'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-type::after{ content:'T'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-namespace::after{ content:'N'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-keyword::after{ content:'K'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-operator::after{ content:'O'; }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-constant::after{ content:'c'; }
+/* 라벨 = 이름(코드 폰트 강제 — CM 구조상 ul 상속이 안 먹는 경우가 있어 라벨에 직접 지정).
+   한 줄 말줄임. 글자색은 전부 흰색(--text) — 종류 구분은 왼쪽 컬러 도트가 담당한다. */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionLabel{
+  flex:0 0 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-family:var(--font-mono); font-weight:450; color:var(--text);
+}
+/* 매칭 글자만 굵게(흰색 유지, CM 기본 밑줄 제거) */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionMatchedText{
+  font-weight:700; color:inherit; text-decoration:none;
+}
+/* detail = 타입/시그니처(모노, 오른쪽으로 밀어 흐릿하게) — 이름은 산세리프, 타입은 코드체 대비 */
+/* 시그니처(params/fields) = 이름 바로 뒤에 흐리게. 길면 제일 먼저 말줄임된다 */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionDetail{
+  flex:0 1 auto; min-width:0;
+  font-family:var(--font-mono); font-style:normal; font-size:13px; color:var(--text-4);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+/* 리스트 스크롤바 — 가늘고 은은하게(앱 톤) */
+.cm-tooltip.cm-tooltip-autocomplete > ul::-webkit-scrollbar{ width:8px; }
+.cm-tooltip.cm-tooltip-autocomplete > ul::-webkit-scrollbar-thumb{
+  background:color-mix(in oklab, var(--text-4) 45%, transparent); border-radius:99px; border:2px solid transparent; background-clip:padding-box;
+}
+/* 문서 사이드 패널(info) — 같은 글래스 톤의 프로즈 */
+.cm-tooltip.cm-completionInfo{
+  background:color-mix(in oklab, var(--bg) 80%, transparent);
+  backdrop-filter:blur(18px) saturate(1.35); -webkit-backdrop-filter:blur(18px) saturate(1.35);
+  border:1px solid var(--line-2); border-radius:12px;
+  margin:0 8px; padding:10px 13px; max-width:340px;
+  font-family:var(--font-sans); font-size:12.5px; line-height:1.55; color:var(--text-3);
+  box-shadow:0 16px 40px -18px rgba(30,22,14,.5);
+}
+
 /* 정의 이동 도착 줄 깜빡임 — 뷰어의 .fvl.flash와 같은 애니메이션 */
 .cm-flash{ animation:fvl-flash 1.5s ease-out; }
 /* Ctrl(정의 이동 모드) — 포인터 커서 + 줄 hover 강조 (뷰어의 .fv-pre.lsp-ctrl와 동일) */

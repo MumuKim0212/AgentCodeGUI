@@ -173,6 +173,39 @@ export interface LspSemanticTokens {
   /** modifier bit position → LSP token modifier name (the server's legend) */
   mods: string[]
 }
+/** One completion candidate — a trimmed LSP CompletionItem the renderer turns into a CM option. */
+export interface LspCompletionItem {
+  label: string
+  /** LSP CompletionItemKind (1=Text, 3=Function, 5=Field, 7=Class … 25=TypeParameter) — drives the CM icon */
+  kind?: number
+  /** type / signature shown beside the label (e.g. `:int`) */
+  detail?: string
+  /** markdown docs (flattened), shown in the side panel */
+  documentation?: string
+  /** text to insert (falls back to label); when `snippet` it carries LSP `${1:..}` placeholders */
+  insertText?: string
+  /** true when insertText is an LSP snippet (insertTextFormat=2) rather than plain text */
+  snippet?: boolean
+  /** server-provided sort/filter hints (CM uses them when present) */
+  sortText?: string
+  filterText?: string
+}
+/** Completion result at a position — candidates + whether the list is partial (re-query on more typing). */
+export interface LspCompletionList {
+  items: LspCompletionItem[]
+  isIncomplete: boolean
+}
+/**
+ * Accurate Verse type registry parsed from the project's digests + `.verse` files (verse-lsp emits
+ * no semantic tokens, so the renderer colours/labels from this instead of guessing). Per UE project.
+ */
+export interface VerseRegistry {
+  kind: Record<string, 'class' | 'struct' | 'enum' | 'interface'> // type name → its kind
+  supers: Record<string, string[]> // type name → super-type names (for inherited-member resolution)
+  members: Record<string, string[]> // type name → its direct member names
+  enumValues: Record<string, string[]> // enum name → its value names (subset of members)
+  setters: Record<string, Record<string, string>> // type → member → SETTER (write) access, when explicit
+}
 
 // ── Terminal (Bash tool) ─────────────────────────────────────
 export type TermLineType = 'cmd' | 'out' | 'ok' | 'muted' | 'err'
@@ -472,7 +505,10 @@ export const IPC = {
   lspDefinition: 'lsp:definition', // definition target(s) for the symbol at a position
   lspSemanticTokens: 'lsp:semantic-tokens', // semantic highlighting tokens for a document
   lspCachedTokens: 'lsp:cached-tokens', // disk-cached tokens for instant paint (no server spawn)
+  lspCompletion: 'lsp:completion', // completion candidates at a position (carries the live editor buffer)
   lspPrewarm: 'lsp:prewarm', // warm up a project's server/compile-DB before the first file open
+  lspWarm: 'lsp:warm', // eagerly open a specific file on its server so it's indexed before typing
+  lspVerseRegistry: 'lsp:verse-registry', // accurate Verse type registry (digests+project) for colouring
   lspProjectStatus: 'lsp:project-status', // aggregate analysis state for a folder (explorer badge)
   lspInstall: 'lsp:install', // download a native language server (C#/C++) on user request
   lspServers: 'lsp:servers', // list every known language server + provisioning state (settings)

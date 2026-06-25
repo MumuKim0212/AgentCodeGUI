@@ -707,8 +707,21 @@ function registerIpc(): void {
   ipcMain.handle(IPC.lspCachedTokens, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.cachedTokens(a.cwd || '', a.relPath).catch(() => null)
   )
+  ipcMain.handle(IPC.lspCompletion, async (_e, a: { cwd: string; relPath: string; pos: LspPos; text: string }) =>
+    lspManager.completion(a.cwd || '', a.relPath, a.pos, a.text).catch(() => null)
+  )
   ipcMain.handle(IPC.lspPrewarm, async (_e, a: { cwd: string }) => {
     lspManager.prewarm(a.cwd || '')
+  })
+  ipcMain.handle(IPC.lspWarm, async (_e, a: { cwd: string; relPath: string }) => {
+    lspManager.warm(a.cwd || '', a.relPath).catch(() => {})
+  })
+  ipcMain.handle(IPC.lspVerseRegistry, async (_e, a: { cwd: string; relPath: string }) => {
+    try {
+      return lspManager.verseRegistry(a.cwd || '', a.relPath)
+    } catch {
+      return null
+    }
   })
   ipcMain.handle(IPC.lspProjectStatus, async (_e, a: { cwd: string }) => lspManager.projectStatus(a.cwd || ''))
   ipcMain.handle(IPC.lspInstall, async (_e, a: { cwd: string; relPath: string }) =>

@@ -9,6 +9,7 @@ import { useCppStructOv } from '../lib/cppStruct'
 import { diffMarksOf, type DiffMarks } from '../lib/cmDiff'
 import { getPref, setPref } from '../lib/prefs'
 import { isImagePath, imageSrc } from '../lib/images'
+import { verseReg } from '../lib/verseRegistry'
 import { FileBadge, fileTypeFor, paletteClassFor } from './fileType'
 import {
   IconBot,
@@ -250,6 +251,11 @@ function parseVerseSig(
     if (!nm) return null
     s = s.slice(nm[1].length).trim()
     eatSpecs()
+    // an enum/struct VALUE reference comes as `enum (/path:)Type.Value` — the trailing `.Value` is
+    // the actual symbol; label it '<kind> value' (e.g. 'enum value') of the type `Type`.
+    const dot = /^\.([A-Za-z_]\w*)/.exec(s)
+    if (dot && (tk[1] === 'enum' || tk[1] === 'struct'))
+      return { kind: tk[1] + ' value', name: dot[1], container: nm[1], retLabel: 'type', mods: mods.length ? mods : undefined }
     return { kind: tk[1], name: nm[1], container, retLabel: 'type', mods: mods.length ? mods : undefined }
   }
 
@@ -465,6 +471,15 @@ function hoverKindClass(kind: string): string {
   return 'k-plain'
 }
 
+// Verse 종류 칩 색 — 사용자 선호대로 Constant Variable ↔ Variable 색을 맞바꾸고, enum/struct 값은
+// 그 타입색(연보라)으로. 그 외는 공용 hoverKindClass.
+function verseKindClass(kind: string, display: string | null): string {
+  if (display === 'Enum Value' || display === 'Struct Value') return 'k-type2'
+  if (kind === 'constant') return 'k-var' // (was k-member) ↔ swapped
+  if (kind === 'var') return 'k-member' // (was k-var) ↔ swapped
+  return hoverKindClass(kind)
+}
+
 // Verse 지정자(<…>)는 의미가 갈린다 — 접근(가시성)·효과(계산 효과)·그 외 선언 지정자.
 // 카드에서 한 줄로 뭉치지 않고 access · effects · specifiers 세 줄로 나눠 보여 준다.
 const VERSE_ACCESS = new Set(['public', 'private', 'protected', 'internal', 'epic_internal'])
@@ -477,8 +492,10 @@ function verseSpecName(spec: string): string {
   const m = /^<\s*([A-Za-z_]\w*)/.exec(spec)
   return m ? m[1] : spec.replace(/[<>]/g, '')
 }
-// 지정자 묶음을 access → specifiers(그 외) → effects 순의 (비어있지 않은) 행들로 가른다
-function splitVerseSpecs(mods: string[]): { k: string; items: string[] }[] {
+// 지정자 묶음을 access → specifiers(그 외) → effects 순의 (비어있지 않은) 행들로 가른다.
+// `kind`를 받아: ① 접근지시자가 없으면 Verse 기본값 `internal`을 명시해 보여 주고,
+// ② `var`는 읽기/쓰기 접근이 갈리므로 'read access'·'write access'로 나눠 보여 준다.
+function splitVerseSpecs(mods: string[], kind?: string, write?: string): { k: string; items: string[] }[] {
   const access: string[] = []
   const effects: string[] = []
   const other: string[] = []
@@ -488,8 +505,23 @@ function splitVerseSpecs(mods: string[]): { k: string; items: string[] }[] {
     else if (VERSE_EFFECT.has(n)) effects.push(m)
     else other.push(m)
   }
+  // A DATA member with no access specifier defaults to `internal` — surface it so the card is
+  // unambiguous. Only for data/callable members (var/constant/function); type DEFINITIONS
+  // (class/struct/enum/interface) don't get the injected default (and synthesized param/local
+  // cards, whose kind is capitalised like 'Parameter', never match here either).
+  const isMemberDecl = !!kind && /^(var|constant|function)$/.test(kind)
+  if (!access.length && isMemberDecl) access.push('<internal>')
   const rows: { k: string; items: string[] }[] = []
-  if (access.length) rows.push({ k: 'access', items: access })
+  if (kind === 'var') {
+    // a `var`'s name-specifier is its READ (get) access; the WRITE (set) access is the explicit
+    // `var<…>` setter (`write`, looked up from the registry since verse-lsp drops it) and only
+    // falls back to the read access when no setter was specified.
+    const read = access[0] ?? '<internal>'
+    rows.push({ k: 'read access', items: [read] })
+    rows.push({ k: 'write access', items: [write ? `<${write}>` : read] })
+  } else if (access.length) {
+    rows.push({ k: 'access', items: access })
+  }
   if (other.length) rows.push({ k: 'specifiers', items: other })
   if (effects.length) rows.push({ k: 'effects', items: effects })
   return rows
@@ -569,13 +601,44 @@ export function HoverContent({
   const kindDisplay = useMemo(() => {
     if (!p?.kind) return null
     if (allMods.includes('static') && !/static/i.test(p.kind)) return 'static ' + p.kind
+    // Verse: label by the CONTAINER's kind when the hovered symbol is a member of an enum/struct
+    // ('Enum Value' / 'Struct Value'); otherwise make data-member labels unambiguous — a non-`var`
+    // binding is an immutable 'Constant Variable', a `var` binding is a (mutable) 'Variable'.
+    if (lang === 'verse') {
+      // the dotted-value form (`enum (/…:)Type.Value`) already resolved to '<kind> value'
+      if (p.kind === 'enum value') return 'Enum Value'
+      if (p.kind === 'struct value') return 'Struct Value'
+      // otherwise: if the hover qualifier's last segment is itself an enum/struct, the symbol is a
+      // member of it (a use-site field/value). (The type itself has container = its module.)
+      const container = (p.from?.v ?? '').replace(/`/g, '').split('/').filter(Boolean).pop()
+      const ck = container ? verseReg().kind[container] : undefined
+      if (ck === 'enum' || ck === 'struct') return ck === 'enum' ? 'Enum Value' : 'Struct Value'
+      if (p.kind === 'constant') return 'Constant Variable'
+      if (p.kind === 'var') return 'Variable'
+    }
     return p.kind
-  }, [p, allMods])
+  }, [p, allMods, lang])
   const mods = useMemo(() => {
     if (!p) return []
     const kindWords = (p.kind ?? '').toLowerCase()
     return allMods.filter((m) => m !== 'static' && !kindWords.includes(m))
   }, [p, allMods])
+  // a Verse `var`'s SETTER (write) access — verse-lsp's hover drops it, so look it up from the
+  // registry by the member's container (the hover qualifier's last path segment) + name.
+  const verseWrite = useMemo(() => {
+    if (lang !== 'verse' || p?.kind !== 'var' || !p.name) return undefined
+    const container = (p.from?.v ?? '').replace(/`/g, '').split('/').filter(Boolean).pop()
+    return container ? verseReg().setters[container]?.[p.name] : undefined
+  }, [p, lang])
+  // Verse: when the container is a TYPE, label the footer with the owner's KIND (struct/enum/class)
+  // and show its name — e.g. an Enum Value reads 'enum `weapon_kind`', a struct field 'struct
+  // `vector_pair`' — instead of the raw "module: /…/Type" path.
+  const verseFrom = useMemo(() => {
+    if (lang !== 'verse' || !p?.from) return p?.from
+    const owner = p.from.v.replace(/`/g, '').split('/').filter(Boolean).pop()
+    const ck = owner ? verseReg().kind[owner] : undefined
+    return ck ? { k: ck, v: '`' + owner + '`' } : p.from
+  }, [p, lang])
   // 카드 안의 모든 코드(시그니처·메타 칩·본문 인라인/펜스·푸터)는 본문과 같은
   // 파이프라인 하나로: hljs 베이스 + 언어 팔레트 + 시맨틱 색 사전(decorate).
   // 색 우선순위: 이 파일 사전 → 세션 누적 사전 → UE 명명규칙(C++만)
@@ -599,7 +662,9 @@ export function HoverContent({
     <>
       {p.kind && (
         <div className="lh-head lh-kindrow">
-          <span className={'lh-kind ' + hoverKindClass(p.kind)}>{kindDisplay}</span>
+          <span className={'lh-kind ' + (lang === 'verse' ? verseKindClass(p.kind, kindDisplay) : hoverKindClass(p.kind))}>
+            {kindDisplay}
+          </span>
         </div>
       )}
       {/* 메모리 정보 알약 — 종류 칩 아래 별도 줄, 아래에 전폭 밑줄로 단을 가른다 */}
@@ -619,7 +684,7 @@ export function HoverContent({
         </div>
       )}
       {/* 스펙 행 — NAME → ACCESS(접근지시자) → PARAMS → RETURN 순서, 한 줄에 하나씩 */}
-      {(p.name || mods.length > 0 || p.params.length > 0 || p.metas.length > 0) && (
+      {(p.name || mods.length > 0 || p.params.length > 0 || p.metas.length > 0 || (lang === 'verse' && verseFrom)) && (
         <div className="lh-spec">
           {/* NAME·ACCESS도 PARAMS·RETURN과 같은 코드 칩으로 — 행 전체가 한 결 */}
           {p.name && (
@@ -632,7 +697,7 @@ export function HoverContent({
           )}
           {/* Verse: 지정자를 access · specifiers · effects 로 갈라 각각 한 줄씩 */}
           {lang === 'verse'
-            ? splitVerseSpecs(mods).map((row) => (
+            ? splitVerseSpecs(mods, p.kind ?? undefined, verseWrite).map((row) => (
                 <Fragment key={row.k}>
                   <span className="lh-spec-k">{row.k}</span>
                   <div className="lh-spec-v">
@@ -672,6 +737,16 @@ export function HoverContent({
               </div>
             </Fragment>
           ))}
+          {/* Verse: 소속 타입(struct/enum/class …)을 별도 구분선 footer가 아니라 스펙 그리드의
+              마지막 행으로 — name·access 와 같은 결로 한 줄 더 붙인다 */}
+          {lang === 'verse' && verseFrom && (
+            <>
+              <span className="lh-spec-k">{verseFrom.k}</span>
+              <div className="lh-spec-v">
+                <Markdown text={verseFrom.v} codeLang={lang} decorate={deco} />
+              </div>
+            </>
+          )}
         </div>
       )}
       {p.docs && (
@@ -679,10 +754,10 @@ export function HoverContent({
           <Markdown text={p.docs} codeLang={lang} decorate={deco} />
         </div>
       )}
-      {p.from && (
+      {lang !== 'verse' && verseFrom && (
         <div className="lh-from">
-          <span className="lh-spec-k">{p.from.k}</span>
-          <Markdown text={p.from.v} codeLang={lang} decorate={deco} />
+          <span className="lh-spec-k">{verseFrom.k}</span>
+          <Markdown text={verseFrom.v} codeLang={lang} decorate={deco} />
         </div>
       )}
     </>

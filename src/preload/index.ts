@@ -64,7 +64,11 @@ const api: WindowApi = {
       ipcRenderer.invoke(IPC.lspDefinition, { cwd, relPath, pos }),
     semanticTokens: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspSemanticTokens, { cwd, relPath }),
     cachedTokens: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspCachedTokens, { cwd, relPath }),
+    completion: (cwd: string, relPath: string, pos: LspPos, text: string) =>
+      ipcRenderer.invoke(IPC.lspCompletion, { cwd, relPath, pos, text }),
     prewarm: (cwd: string) => ipcRenderer.invoke(IPC.lspPrewarm, { cwd }),
+    warm: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspWarm, { cwd, relPath }),
+    verseRegistry: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspVerseRegistry, { cwd, relPath }),
     projectStatus: (cwd: string) => ipcRenderer.invoke(IPC.lspProjectStatus, { cwd }),
     install: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspInstall, { cwd, relPath }),
     onInstallProgress: (cb) => subscribe(IPC.lspInstallProgress, cb),

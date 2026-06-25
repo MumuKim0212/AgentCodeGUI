@@ -293,6 +293,39 @@ export async function verseKeywordDoc(absFile: string, line: number, col: number
   return word && Object.hasOwn(VERSE_GLOSSARY, word) ? VERSE_GLOSSARY[word] : null
 }
 
+// `?` 는 Verse의 옵션 연산자로 위치에 따라 의미가 셋이다 — verse-lsp는 호버를 안 주고 `wordAt`도
+// 기호를 안 잡으므로(글로서리처럼) 직접 설명한다. VERSE_GLOSSARY와 같은 톤(설명만, B안).
+const VERSE_Q_OPTION = '옵션 타입입니다. 값이 있을 수도(그 값), 없을 수도(`false`) 있습니다.'
+const VERSE_Q_QUERY = '옵션에 값이 있으면 그 값을 꺼내 성공하고, 없으면 실패합니다. `if` 나 `for` 같은 실패가 허용되는 곳에서 씁니다.'
+const VERSE_Q_PARAM = '기본값이 있어 생략할 수 있는 이름 매개변수입니다.'
+
+/**
+ * Hover doc for the Verse `?` option operator at (line,col). Distinguishes its three forms by the
+ * adjacent characters: `expr?` (option query — preceded by an identifier/closer), `?name:` (an
+ * optional NAMED parameter — `?` then a name then `:`), and `?type` (an option TYPE — anything
+ * else). Returns markdown (same shape as the keyword glossary), or null when the caret isn't on `?`.
+ */
+export async function verseSymbolDoc(absFile: string, line: number, col: number): Promise<string | null> {
+  let raw: string
+  try {
+    raw = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)[line]
+  } catch {
+    return null
+  }
+  if (!raw) return null
+  // the `?` at the caret, or just left of it (hovering the char right after also counts)
+  const i = raw[col] === '?' ? col : raw[col - 1] === '?' ? col - 1 : -1
+  if (i < 0) return null
+  const hash = raw.indexOf('#') // ignore a `?` inside a line comment
+  if (hash >= 0 && hash < i) return null
+  // postfix `expr?` — the char immediately before is an identifier or a closing bracket
+  if (/[A-Za-z0-9_)\]]/.test(raw[i - 1] ?? '')) return VERSE_Q_QUERY
+  // prefix `?name…` — `?name:` (a colon that isn't `:=`) is an optional parameter; else an option type
+  const m = /^\?([A-Za-z_]\w*)(\s*:(?!=))?/.exec(raw.slice(i))
+  if (!m) return null
+  return m[2] ? VERSE_Q_PARAM : VERSE_Q_OPTION
+}
+
 /** Doc comment immediately above the declaration at `line` in `absFile` (own code or digest). */
 export async function verseDocAt(absFile: string, line: number): Promise<string> {
   try {
@@ -315,6 +348,19 @@ function wordAt(line: string, col: number): string | null {
   return /^[A-Za-z_]\w*$/.test(w) ? w : null
 }
 
+// The type whose body encloses `declLine` — the nearest `Name := class|struct|enum|interface` header
+// above it at a SHALLOWER indent. Used to qualify a synthesized member card (`(/Type:)Field…`).
+function verseEnclosingType(lines: string[], declLine: number): string | null {
+  const declIndent = verseIndent(lines[declLine] ?? '')
+  for (let i = declLine - 1; i >= 0; i--) {
+    const t = (lines[i] ?? '').trim()
+    if (!t || t.startsWith('#') || t.startsWith('@')) continue
+    const tm = /^([A-Za-z_]\w*)(?:<[^>]*>|\([^()]*\))*\s*:=\s*(?:class|struct|enum|interface)\b/.exec(t)
+    if (tm && verseIndent(lines[i] ?? '') < declIndent) return tm[1]
+  }
+  return null
+}
+
 /**
  * verse-lsp gives NO hover (nor definition) at a symbol's *declaration* site — only at its
  * uses. To fill that gap, turn the declaration line into an LSP-style signature string that
@@ -335,13 +381,17 @@ export async function verseDeclHover(absFile: string, line: number, col: number)
   if (!word) return null
   const s = raw.trim()
   let sig: string | null = null
+  let isMember = false // ②/③ are members of an enclosing type; ① is the type itself
   // ① 타입 선언: Name<specs> := class|struct|enum|interface|module<specs>(super)?
   let m = /^([A-Za-z_]\w*)((?:<[^>]*>)*)\s*:=\s*(class|struct|enum|interface|module)\b((?:<[^>]*>)*)/.exec(s)
   if (m && m[1] === word) sig = `${m[3]} ${m[1]}${m[2]}${m[4]}`
   // ② 함수/메서드: Name<specs>(params)<effects>:ret = …
   if (!sig) {
     m = /^([A-Za-z_]\w*)((?:<[^>]*>)*)\(([^]*?)\)((?:<[^>]*>)*)\s*:\s*([^=]+?)\s*=/.exec(s)
-    if (m && m[1] === word) sig = `${m[1]}${m[2]}(${m[3].trim()})${m[4]}:${m[5].trim()}`
+    if (m && m[1] === word) {
+      sig = `${m[1]}${m[2]}(${m[3].trim()})${m[4]}:${m[5].trim()}`
+      isMember = true
+    }
   }
   // ③ var / 필드: [var|set] Name<specs>:type [= value]   (':='는 ①에서 처리)
   if (!sig && !s.includes(':=')) {
@@ -349,9 +399,16 @@ export async function verseDeclHover(absFile: string, line: number, col: number)
     if (m && m[2] === word) {
       const bind = (m[1] || '').trim()
       sig = `${bind ? bind + ' ' : ''}${m[2]}${m[3]}:${m[4].trim()}`
+      isMember = true
     }
   }
   if (!sig) return null
+  // verse-lsp gives no qualifier here (it returned nothing), so prepend the enclosing type as one —
+  // the hover card uses it to tell a struct field / enum value from a free constant ('Struct Value').
+  if (isMember) {
+    const enc = verseEnclosingType(lines, line)
+    if (enc) sig = `(/${enc}:)${sig}`
+  }
   const doc = extractVerseDoc(lines, line) // 선언 위 문서 주석도 함께
   return '```verse\n' + sig + '\n```' + (doc ? '\n\n' + doc : '')
 }
@@ -424,8 +481,13 @@ export async function verseLocalHover(
     // keep scanning up to the real `var X` decl (field or local) and label by that.
     const vm = new RegExp(`^var\\s+${word}\\b\\s*(?::\\s*([^=]+?))?\\s*(?:=|$)`).exec(t)
     if (vm) return isMethodLocal(i) ? card('Variable', vm[1] || typeHint) : null
-    // walrus local — `word := …` at statement start or in `if (word := …)` / `for (word := …)`
-    if (new RegExp(`(?:^|[(,]\\s*)\\??${word}\\s*:=`).test(t)) return isMethodLocal(i) ? card('Local Variable', typeHint) : null
+    // walrus local — `word := …` at statement start or in `if (word := …)` / `for (word := …)`.
+    // EXCEPT a type definition `word := class|struct|enum|interface|module` — that's a TYPE, not a
+    // local; stop here so the hover falls through to the real kind detection (Enum/Struct/Class…).
+    if (new RegExp(`(?:^|[(,]\\s*)\\??${word}\\s*:=`).test(t)) {
+      if (/:=\s*(?:class|struct|enum|interface|module)\b/.test(t)) break
+      return isMethodLocal(i) ? card('Local Variable', typeHint) : null
+    }
     // typed local/field statement — `word : type = …`
     const tm = new RegExp(`^${word}\\s*:\\s*([^=]+?)\\s*=`).exec(t)
     if (tm) return isMethodLocal(i) ? card('Local Variable', tm[1]) : null

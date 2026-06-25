@@ -1,3 +1,5 @@
+import { verseReg, verseInheritedMembers } from './verseRegistry'
+
 // ── B-lite: approximate member / local / module colouring for .verse ─────────
 // verse-lsp exposes no semantic tokens / documentSymbol, and Verse's `Name:type` syntax is
 // identical for fields, parameters and locals, so highlight.js alone cannot tell them apart.
@@ -33,9 +35,9 @@ const VAR_FIELD = /^(?:var|set)\s+([A-Za-z_]\w*)/
 const TYPED_FIELD = /^([A-Za-z_]\w*)\s*(?:<[^>]*>)*\s*:/
 
 export interface VerseScopes {
-  members: Set<string> // class/struct field names
+  members: Set<string> // this file's class/struct fields + members inherited from registry supers
   locals: Set<string> // parameters + local bindings
-  structEnum: Set<string> // struct/enum type names → the distinct lighter type colour
+  fileTypes: Map<string, string> // this file's own type defs → kind (class|struct|enum|interface)
 }
 
 /**
@@ -46,7 +48,8 @@ export interface VerseScopes {
  */
 export function verseScopes(code: string): VerseScopes {
   const members = new Set<string>()
-  const structEnum = new Set<string>()
+  const fileTypes = new Map<string, string>() // this file's type defs → kind
+  const supers: string[] = [] // superclass names of this file's classes → expand inherited members
   const bodyIndents: number[] = [] // body indent (= header indent + 1) of each open class/struct
   let inBlockComment = false
   for (const raw of code.split('\n')) {
@@ -64,7 +67,10 @@ export function verseScopes(code: string): VerseScopes {
     while (bodyIndents.length && lvl < bodyIndents[bodyIndents.length - 1]) bodyIndents.pop()
     const th = TYPE_HEADER.exec(trimmed)
     if (th) {
-      if (th[2] === 'struct' || th[2] === 'enum') structEnum.add(th[1]) // distinct lighter colour
+      fileTypes.set(th[1], th[2]) // name → kind (class|struct|enum|interface)
+      // superclass(es) of a class def — `name<…> := class<…>(Super, …):` → expand inherited members
+      const sup = /:=\s*(?:class|interface)\b(?:<[^>]*>)*\s*\(([^)]*)\)/.exec(trimmed)
+      if (sup) for (const s of sup[1].split(',')) supers.push(s.replace(/[<(].*$/, '').trim())
       if (th[2] !== 'enum') bodyIndents.push(lvl + 1) // enum body holds values, not member fields
       continue
     }
@@ -77,36 +83,53 @@ export function verseScopes(code: string): VerseScopes {
     const t = TYPED_FIELD.exec(trimmed)
     if (t) members.add(t[1])
   }
+  // inherited members from the registry (engine bases like `component`) so e.g. `TickEvents.` reads
+  // as a member (blue), not an external module (purple).
+  for (const s of supers) if (s) for (const m of verseInheritedMembers(s)) members.add(m)
 
   // Locals: parameters (`(Name:` / `, ?Name:`), `var`/`set` bindings, and walrus `Name :=`
   // (failable `if (X := …)`, loop `for (X := …)`, plain local). Pattern-matched over the whole
   // file; `members` wins at paint time, so a class-body constant caught here is harmless.
   const locals = new Set<string>()
   for (const m of code.matchAll(/\b(?:var|set)\s+([A-Za-z_]\w*)/g)) locals.add(m[1])
-  for (const m of code.matchAll(/([A-Za-z_]\w*)\s*:=/g)) locals.add(m[1])
+  // walrus `Name := …` binds a local — but NOT `Name := class|struct|enum|interface|module` (a
+  // type definition). Excluding the type-def form keeps real type names out of `locals`.
+  for (const m of code.matchAll(/([A-Za-z_]\w*)\s*:=\s*(?!(?:class|struct|enum|interface|module)\b)/g))
+    locals.add(m[1])
   for (const m of code.matchAll(/[(,]\s*\??\s*([A-Za-z_]\w*)\s*:(?!=)/g)) locals.add(m[1])
-  return { members, locals, structEnum }
+  return { members, locals, fileTypes }
 }
 
-// Recolour highlight.js output for .verse using the scanned scopes. Operates on the raw HTML
-// (both the viewer and the editor go through highlightCode, so both benefit). A `hljs-variable`
-// span optionally followed by '.' is a receiver; member names carry no HTML-significant chars.
+// Recolour highlight.js output for .verse from FACTS, not guesses. The grammar no longer assumes
+// "lowercase = type" (everything unknown is a plain `hljs-variable`); here we keep the default
+// (white) for anything we can't confirm, and only colour identifiers we KNOW the kind of:
+//   • a class/struct field, or a member inherited from a registry super → member colour (kept)
+//   • a confirmed TYPE (this file's defs ∪ the digest/project registry) → type colour, by kind
+//   • everything else (locals, params, unknown receivers) → default colour (span stripped)
+// Both the viewer and the editor go through here, so both get it.
 export function recolorVerse(html: string, scopes: VerseScopes): string {
-  const { members, locals, structEnum } = scopes
+  const { members, fileTypes } = scopes
+  const reg = verseReg()
+  const typeKind = (name: string): string | undefined => fileTypes.get(name) ?? reg.kind[name]
+  // class/interface → the class colour; struct/enum → the distinct lighter type colour
+  const typeSpan = (name: string, kind: string): string =>
+    kind === 'class' || kind === 'interface'
+      ? `<span class="hljs-title class_">${name}</span>`
+      : `<span class="sem-type2">${name}</span>`
   let out = html.replace(
     /<span class="hljs-variable">([A-Za-z_]\w*)<\/span>(\.?)/g,
     (full, name: string, dot: string) => {
-      if (members.has(name)) return full // member field → member colour (keep)
-      if (dot === '.' && !locals.has(name)) return `<span class="hljs-title class_">${name}</span>.` // external receiver → module/type colour
-      return name + dot // local / parameter / non-member read → default colour
+      if (members.has(name)) return full // member (own or inherited) → member colour, keep
+      const k = typeKind(name)
+      if (k) return typeSpan(name, k) + dot // confirmed type → type colour by kind
+      return name + dot // local / parameter / unknown → default (white)
     }
   )
-  // struct/enum type names (definitions `hljs-title class_`, snake_case uses `hljs-type`) →
-  // the distinct lighter type colour (sem-type2 = --code-type-2), like Rider's struct/enum.
-  if (structEnum.size) {
-    out = out.replace(/<span class="hljs-(?:title class_|type)">([A-Za-z_]\w*)<\/span>/g, (full, name: string) =>
-      structEnum.has(name) ? `<span class="sem-type2">${name}</span>` : full
-    )
-  }
+  // a type DEFINITION name is `hljs-title class_` from the grammar (always the class colour); recolour
+  // struct/enum defs to the lighter type colour by their actual kind.
+  out = out.replace(/<span class="hljs-title class_">([A-Za-z_]\w*)<\/span>/g, (full, name: string) => {
+    const k = typeKind(name)
+    return k === 'struct' || k === 'enum' ? `<span class="sem-type2">${name}</span>` : full
+  })
   return out
 }

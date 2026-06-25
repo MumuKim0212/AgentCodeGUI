@@ -26,6 +26,8 @@ import type {
   LspHoverResult,
   LspLocation,
   LspSemanticTokens,
+  LspCompletionList,
+  VerseRegistry,
   LspInstallProgress,
   LspServerInfo,
   GitStatus,
@@ -106,8 +108,15 @@ export interface WindowApi {
     semanticTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null>
     /** disk-cached tokens for instant paint on open (no server spawn) — null when none */
     cachedTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null>
+    /** completion candidates at an LSP (0-based) position. `text` is the live editor buffer —
+     *  completion needs the unsaved partial word, which isn't on disk yet. Null = no candidates. */
+    completion(cwd: string, relPath: string, pos: LspPos, text: string): Promise<LspCompletionList | null>
     /** warm a project's server / compile-DB before the first file is opened */
     prewarm(cwd: string): Promise<void>
+    /** eagerly open a specific file on its server so indexing finishes before the first completion */
+    warm(cwd: string, relPath: string): Promise<void>
+    /** accurate Verse type registry (kinds/supers/members/enum values) for a file's project, for colouring */
+    verseRegistry(cwd: string, relPath: string): Promise<VerseRegistry | null>
     /** aggregate analysis state for a folder (explorer badge: analyzing/ready + percent) */
     projectStatus(cwd: string): Promise<LspProjectStatus>
     /** download this file's native language server (C#/C++) — user-initiated */
