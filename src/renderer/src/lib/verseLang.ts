@@ -1,4 +1,5 @@
 import type { HLJSApi, Language, Mode } from 'highlight.js'
+import { VERSE_SPECIFIER_NAMES } from './verseKeywords'
 
 // highlight.js grammar for Epic's Verse language (.verse). Grounded in the UE6.0 source
 // corpus AND cross-checked against Epic's own VS Code Verse grammar (verse.json, scope
@@ -21,14 +22,10 @@ import type { HLJSApi, Language, Mode } from 'highlight.js'
 // Effect, access and declaration specifiers that appear between angle brackets, e.g.
 // <native>, <public>, <transacts>, <getter(GetX)>. Listing them explicitly (rather than
 // matching any <word>) keeps the '<' comparison operator from being read as a specifier.
-const SPECIFIERS = [
-  'native_callable', 'native', 'public', 'private', 'protected', 'internal',
-  'epic_internal', 'transacts', 'computes', 'reads', 'writes', 'decides', 'varies',
-  'converges', 'suspends', 'no_rollback', 'allocates', 'override', 'final_super_base',
-  'final_super', 'final', 'abstract', 'unique', 'concrete', 'open', 'closed', 'castable',
-  'constructor', 'getter', 'setter', 'predicts', 'persistable', 'persistent', 'localizes',
-  'uht_comparable', 'scoped', 'module_scoped_var_weak_map_key', 'mesh_part_field'
-].join('|')
+// The list is shared with the @/<' autocomplete (verseKeywords.ts) so colouring + completion
+// never drift; its order matters here — longer variants precede their prefixes (final_super_base
+// → final_super → final) so the alternation matches the whole token.
+const SPECIFIERS = VERSE_SPECIFIER_NAMES.join('|')
 
 // Reserved words. KEYWORDS also includes the built-in primitive types (coloured like `class`,
 // matching how Rider colours `int`/`void`) and the control/declaration words (in/is/of/with/

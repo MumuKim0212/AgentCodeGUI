@@ -838,8 +838,11 @@ input,textarea{ font-family:inherit; }
 /* Verse: @속성(@editable 등)은 pal-rider에서 meta=클래스색(보라)이라 구분이 안 됐다 —
    코랄(따뜻한 주황-적)로 분리한다. (<지정자>는 .specifier_ 규칙이 구조체색으로 더 높은
    특이도로 이긴다.) */
-.pal-verse{ --verse-attr:#c0573a; --verse-spec:#5f63a8; }
-:root[data-theme="dark"] .pal-verse{ --verse-attr:#e29178; --verse-spec:#a9addb; }
+/* :root에 둔다(.pal-verse 아님) — 자동완성 팝업은 document.body 아래(=.pal-verse 밖)에 떠서
+   .pal-verse 변수를 못 물려받는다. 인게임 .pal-verse는 :root에서 그대로 상속해 쓰고, 팝업의
+   @속성/<지정자> 아이콘 색(cm-completionIcon-attribute/-specifier)도 같은 값을 쓴다. */
+:root{ --verse-attr:#c0573a; --verse-spec:#5f63a8; }
+:root[data-theme="dark"]{ --verse-attr:#e29178; --verse-spec:#a9addb; }
 .pal-verse .hljs-meta{ color:var(--verse-attr); }
 /* Verse: <…> 지정자(<public>·<override>·<transacts>·<computes>…)는 원래 클래스색(보라)이라
    구조체색(--code-type-2)으로 분리했었는데, struct/enum이 그 구조체색을 쓰게 되면서 겹쳤다 —
@@ -1701,6 +1704,16 @@ input,textarea{ font-family:inherit; }
 .cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-operator::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 5.2v7.2'/><path d='M8.2 8.8h7.6'/><path d='M8.2 17.6h7.6'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 5.2v7.2'/><path d='M8.2 8.8h7.6'/><path d='M8.2 17.6h7.6'/></svg>"); }
 .cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-constant::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='11' x='3' y='11' rx='2.5'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='11' x='3' y='11' rx='2.5'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/></svg>"); }
 .cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-text::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16'/><path d='M22 9v7'/><path d='M3.304 13h6.392'/><circle cx='18.5' cy='12.5' r='3.5'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16'/><path d='M22 9v7'/><path d='M3.304 13h6.392'/><circle cx='18.5' cy='12.5' r='3.5'/></svg>"); }
+/* Verse 전용 — @속성(at-sign)·<지정자>(꺾쇠 ‹ ›, Lucide). @는 인게임 색 그대로(코랄 --verse-attr).
+   <지정자>는 '접근/효과/선언' 텍스트 대신 아이콘 '색'으로 그룹을 구분한다(라벨 글자는 흰색 유지) —
+   접근=파랑 / 효과=보라 / 선언=틸. 아이콘 모양(꺾쇠)은 셋 다 같고, 색만 다르다. */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-attribute{ color:var(--verse-attr); background:color-mix(in oklab, var(--verse-attr) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-spec-access{ color:var(--blue); background:color-mix(in oklab, var(--blue) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-spec-effect{ color:var(--violet); background:color-mix(in oklab, var(--violet) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-spec-decl{ color:var(--teal); background:color-mix(in oklab, var(--teal) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-attribute::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='4'/><path d='M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='4'/><path d='M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94'/></svg>"); }
+/* 세 지정자 그룹은 꺾쇠 마스크를 공유한다(색만 위에서 다르게) */
+.cm-tooltip.cm-tooltip-autocomplete [class*="cm-completionIcon-spec-"]::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m9 7-5 5 5 5'/><path d='m15 7 5 5-5 5'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m9 7-5 5 5 5'/><path d='m15 7 5 5-5 5'/></svg>"); }
 /* 라벨 = 이름(코드 폰트 강제 — CM 구조상 ul 상속이 안 먹는 경우가 있어 라벨에 직접 지정).
    한 줄 말줄임. 글자색은 전부 흰색(--text) — 종류 구분은 왼쪽 컬러 도트가 담당한다. */
 .cm-tooltip.cm-tooltip-autocomplete .cm-completionLabel{

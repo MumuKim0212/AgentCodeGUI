@@ -18,6 +18,8 @@ import {
   closeBracketsKeymap,
   autocompletion,
   completionKeymap,
+  completionStatus,
+  closeCompletion,
   startCompletion,
   acceptCompletion,
   snippetCompletion,
@@ -31,6 +33,7 @@ import type { LspSemanticTokens, LspLocation, LspCompletionItem } from '@shared/
 import { VERSE_BUILTIN_KIND } from '@shared/protocol'
 import { highlighting } from '../lib/cmHljs'
 import { ensureVerseRegistry, onVerseRegChange } from '../lib/verseRegistry'
+import { VERSE_SPECIFIERS, VERSE_ATTRIBUTES } from '../lib/verseKeywords'
 import { buildSemDict, type StructOv } from '../lib/semTokens'
 import { readDiffField, type DiffMarks } from '../lib/cmDiff'
 import { findField, setFindHits, computeMatches } from '../lib/cmFind'
@@ -127,6 +130,40 @@ function buildCandidates(items: LspCompletionItem[]): ComplCand[] {
   }
   return [...byName.values()]
 }
+
+// ── Verse @속성 / <지정자> 자동완성 (verse-lsp가 안 주는 언어 문법 토큰) ──────────────────────
+// verse-lsp는 멤버/lexical만 완성해 주고 `@editable`·`<override>` 같은 문법 토큰은 목록에 안 싣는다.
+// 정적 목록(verseKeywords.ts)으로 직접 채운다. @속성은 'attribute'(코랄, 인게임 --verse-attr와 동일).
+// <지정자>는 그룹을 '접근/효과/선언' 텍스트로 쓰지 않고 아이콘 '색'으로 구분한다(앱 관례: 라벨 글자는
+// 흰색, 종류는 왼쪽 아이콘 색이 담당) — 그룹별 type을 cm-completionIcon-spec-*로 흘려 색만 다르게
+// 칠한다(아이콘 모양 <>는 셋 다 동일). 색: access=파랑·effect=보라·decl=틸.
+const VERSE_SPEC_TYPE: Record<string, string> = { access: 'spec-access', effect: 'spec-effect', decl: 'spec-decl' }
+
+// <지정자> 삽입: 친 글자를 `이름>`으로 치환하고(이미 '>'가 뒤따르면 새로 넣지 않는다) 캐럿을 '>' 뒤로 —
+// `OnBegin<sus` 에서 suspends를 고르면 `OnBegin<suspends>|` 처럼 닫는 '>'까지 한 번에 완성된다.
+function applySpecifier(name: string) {
+  return (view: EditorView, _c: Completion, from: number, to: number): void => {
+    const hasGt = view.state.sliceDoc(to, to + 1) === '>'
+    view.dispatch({
+      changes: { from, to, insert: hasGt ? name : name + '>' },
+      selection: { anchor: from + name.length + 1 }, // 항상 닫는 '>' 바로 뒤
+      userEvent: 'input.complete',
+      scrollIntoView: true
+    })
+  }
+}
+
+// 정적이라 한 번만 만든다. getter/setter·@doc은 인자를 받으므로 스니펫(괄호/따옴표 안에 커서)으로.
+const VERSE_SPEC_OPTS: Completion[] = VERSE_SPECIFIERS.filter((s) => !s.internal).map((s) => {
+  const base: Completion = { label: s.name, type: VERSE_SPEC_TYPE[s.group] ?? 'spec-decl', info: s.doc }
+  return s.arg ? snippetCompletion(`${s.name}(\${})>`, base) : { ...base, apply: applySpecifier(s.name) }
+})
+// 라벨/삽입은 '@' 없이(이미 친 '@' 다음부터 치환하므로 — verseComplete의 from 참고). 코랄 at-sign
+// 아이콘이 @속성임을 알리니 라벨에 '@'를 또 붙이지 않는다(<지정자>가 '<' 없이 보이는 것과 동일).
+const VERSE_AT_OPTS: Completion[] = VERSE_ATTRIBUTES.map((a) => {
+  const base: Completion = { label: a.name, type: 'attribute', detail: a.arg ? '("…")' : undefined, info: a.doc }
+  return a.arg ? snippetCompletion(`${a.name}("\${}")`, base) : { ...base, apply: a.name }
+})
 
 // 정의 이동 도착 줄을 잠깐 깜빡이는 라인 데코레이션 (뷰어의 .fvl.flash와 같은 fvl-flash 애니메이션).
 // 값 = 줄 시작 offset, null = 해제.
@@ -480,6 +517,22 @@ export const CmEditor = forwardRef<
     )
     // LSP 자동완성 소스: 현재 CM 버퍼 전체를 같이 보내(미저장 편집·부분 단어 반영) 후보를 받는다.
     // 읽기 모드/LSP 미준비면 끈다. word가 있으면 그 시작에서, 트리거(`.`) 뒤면 캐럿에서 치환.
+    // Verse @속성 / <지정자> 정적 소스 — verse-lsp가 안 주는 문법 토큰을 직접 채운다. `@` 뒤(속성)나
+    // 식별자/`)`/`]`에 바로 붙은 `<` 뒤(지정자)에서만 발동하고, 지정자는 닫는 '>'까지 완성한다.
+    const verseComplete = (ctx: CompletionContext): CompletionResult | null => {
+      if (lang !== 'verse' || ctx.state.readOnly) return null
+      const ln = ctx.state.doc.lineAt(ctx.pos)
+      const before = ctx.state.sliceDoc(ln.from, ctx.pos)
+      // @속성: '@'는 그대로 두고 그 '다음'부터 치환한다(from=@ 다음) → 목록 라벨도 '@' 없이 보이고
+      // 이미 친 '@'와 안 겹친다. validFor도 단어 부분(\w*)만 본다.
+      const at = /@(\w*)$/.exec(before)
+      if (at) return { from: ctx.pos - at[1].length, options: VERSE_AT_OPTS, validFor: /^\w*$/ }
+      // `<`는 비교 연산자이기도 하므로, 토큰(이름·`)`·`]`)에 공백 없이 바로 붙은 `<`만 지정자로 본다
+      // (`a < b`는 안 걸리고 `OnBegin<`·`)<`만 걸린다). 친 단어는 from(=`<` 다음)부터 치환된다.
+      const lt = /[)\]\w]<(\w*)$/.exec(before)
+      if (lt) return { from: ctx.pos - lt[1].length, options: VERSE_SPEC_OPTS, validFor: /^\w*$/ }
+      return null
+    }
     const lspComplete = async (ctx: CompletionContext): Promise<CompletionResult | null> => {
       if (!lspRef.current || ctx.state.readOnly) return null
       const word = ctx.matchBefore(/[\w$]+/)
@@ -487,6 +540,12 @@ export const CmEditor = forwardRef<
       // 자동 발동은 단어 입력 중이거나 트리거 문자 뒤일 때만 — 빈 자리에서 매 입력마다 뜨는 걸 막는다.
       // (Ctrl+Space로 명시 호출하면 ctx.explicit=true라 항상 통과)
       if (!ctx.explicit && !word && before !== '.') return null
+      // Verse @속성/<지정자> 컨텍스트는 verseComplete가 (정적으로) 책임지므로 LSP는 양보한다 —
+      // 안 그러면 lexical 후보가 지정자 목록에 섞여 든다.
+      if (lang === 'verse') {
+        const pre = ctx.state.sliceDoc(ctx.state.doc.lineAt(ctx.pos).from, ctx.pos)
+        if (/@\w*$/.test(pre) || /[)\]\w]<\w*$/.test(pre)) return null
+      }
       // CM offset → LSP {line, character} (ctx.view는 optional이라 state.doc에서 직접 계산)
       const ln = ctx.state.doc.lineAt(ctx.pos)
       const pos = { line: ln.number - 1, character: ctx.pos - ln.from }
@@ -576,16 +635,21 @@ export const CmEditor = forwardRef<
           // 자체 키맵은 끄고(위에서 completionKeymap을 명시 순서로 넣음) 타이핑 중 자동 발동만 둔다.
           // filterStrict: CM 기본 fuzzy(부분수열)를 끄고 '친 글자로 시작하는' 접두어 후보만 남긴다 —
           // `mi`가 has_dynam·i·cs 같은 흩어진 매칭에 걸려 무관한 항목이 쏟아지던 걸 막는다(다른 IDE처럼).
-          autocompletion({ override: [lspComplete], defaultKeymap: false, activateOnTyping: true, filterStrict: true }),
-          // 방금 친 글자가 멤버 트리거(`.`)이거나 식별자 문자면 팝업을 직접 연다. activateOnTyping만으론
-          // 파일을 막 연 직후 첫 글자에 팝업이 안 뜨는 경우가 있어(콜드), 명시적으로 발동해 신뢰성을 높인다.
-          // (validFor 덕에 단어 도중엔 서버 재요청 없이 로컬 필터만 돌아 비용은 거의 없다.)
+          // verseComplete를 먼저(정적·동기, @/<만 발동) 두고 그다음 LSP. 둘은 @/< 컨텍스트에서 서로
+          // 양보하므로 결과가 섞이지 않는다.
+          autocompletion({ override: [verseComplete, lspComplete], defaultKeymap: false, activateOnTyping: true, filterStrict: true }),
+          // 방금 친 글자가 트리거면 팝업을 직접 연다(activateOnTyping만으론 콜드/첫 글자에 안 뜨는 경우가
+          // 있어 신뢰성을 높인다). `.`·식별자 문자는 LSP 소스(LSP 필요)가, Verse의 `@`/`<`는 정적
+          // verseComplete가 받으므로 LSP 없이도 연다. (validFor 덕에 단어 도중엔 로컬 필터만 돈다.)
           EditorView.updateListener.of((u) => {
-            if (!u.docChanged || !lspRef.current || u.state.readOnly) return
+            if (!u.docChanged || u.state.readOnly) return
+            const hasLsp = !!lspRef.current
             let trigger = false
             u.changes.iterChanges((_fa, _ta, _fb, _tb, ins) => {
               const s = ins.toString()
-              if (s === '.' || (s.length === 1 && /[A-Za-z_]/.test(s))) trigger = true
+              if (s.length !== 1) return
+              if (langRef.current === 'verse' && (s === '@' || s === '<')) trigger = true
+              else if (hasLsp && (s === '.' || /[A-Za-z_]/.test(s))) trigger = true
             })
             if (trigger) startCompletion(u.view)
           }),
@@ -607,6 +671,24 @@ export const CmEditor = forwardRef<
     }
     // rebuild when the file/lang changes (no incremental doc diffing yet)
   }, [content, lang])
+
+  // Esc — 자동완성 팝업이 떠 있으면 그것만 닫는다(IDE 표준). 뷰어 모달 닫기 Esc는 window 'bubble'에
+  // 달려 있고 CM의 completionKeymap Esc는 stopPropagation을 안 해서, 그냥 두면 Esc 한 번에 팝업도
+  // 닫히고 모달까지 닫혔다. 앱의 관용 패턴(FindBar/다이얼로그)대로 window 'capture'에서 가로채
+  // stopPropagation으로 모달 핸들러에 닿기 전에 막는다 — 팝업이 'active'일 때만. 없을 땐 통과시켜
+  // Esc가 평소대로(검색 바·모달 닫기 등) 동작하게 둔다.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      const v = viewRef.current
+      if (!v || completionStatus(v.state) !== 'active') return
+      e.preventDefault()
+      e.stopPropagation()
+      closeCompletion(v)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
 
   // semantic tokens + C++ struct 보정 arrive async (LSP warm-up / hover probe) — swap
   // the highlighting layer in place via the compartment, so live colors appear without
