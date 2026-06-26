@@ -26,10 +26,15 @@ import {
   verseTypeFromHover,
   verseResolveTypeRegex,
   verseTypeMembers,
+  verseScopeCompletions,
+  verseExtMethods,
+  verseIsTypePosition,
+  verseBuiltinTypeItems,
   verseRegistry as verseMemberDbRegistry
 } from './verseMemberDb'
 import { getCached, setCached, gcDeadBuckets } from './semcache'
 import { APP_HOME } from '../engine/versions'
+import { VERSE_BUILTIN_KIND } from '@shared/protocol'
 import type {
   LspCompletionItem,
   LspCompletionList,
@@ -434,6 +439,71 @@ function mapCompletion(r: RawCompletion): LspCompletionList | null {
   return items.length ? { items, isIncomplete } : null
 }
 
+/**
+ * Merge scan-based scope candidates OVER a raw verse-lsp list: our items first (so their kinds win —
+ * a user function reads as a function, not a generic variable), then any server item whose name we
+ * don't already carry. Keeps the list `isIncomplete` when the server returned nothing (likely a cold
+ * compile) so the renderer re-queries as the user types, instead of locally filtering our scan forever.
+ *
+ * Strips two kinds of noise verse-lsp dumps into the bare-identifier scope:
+ *  • receiver-required extension methods like `(arr:[]t).RemoveElement(…)` — by NAME (`extMethods`,
+ *    scanned from the digests) plus any LSP kind=Method. Only callable as `receiver.method(…)`.
+ *  • operator definitions like `ref int += int` / `operator'+'…` — by shape: a real bare candidate's
+ *    label is `Name`, `Name(…)`, `Name[…]`, `Name<…>`, `Name:type`, or the archetype `Name {…}`;
+ *    an operator's `identifier + space + symbol` (or no leading identifier) fails BARE_IDENT.
+ * The enclosing class's OWN methods stay — they come from the scope scan (added first), not from here.
+ */
+const LSP_KIND_METHOD = 2
+const LSP_KIND_KEYWORD = 14
+const BARE_IDENT = /^[A-Za-z_]\w*(?:$|[([{<:]|\s+\{)/
+// LSP CompletionItemKinds that are TYPES — Class, Interface, Enum, Struct, TypeParameter
+const TYPE_KINDS = new Set([7, 8, 13, 22, 25])
+
+/**
+ * Type-position completion: the caret is in a `: Type` slot (parameter/return/field type), so offer
+ * TYPES ONLY — built-ins + our scope's type entries + verse-lsp items that are types (by kind, or
+ * confirmed by our registry when verse-lsp mis-tags them). Drops every variable/function/field so the
+ * user isn't offered their locals where only a type makes sense.
+ */
+function mergeVerseTypes(typeScope: LspCompletionItem[], raw: RawCompletion, reg: VerseRegistry): LspCompletionList | null {
+  const lsp = mapCompletion(raw)
+  const nameOf = (l: string): string => l.split(/[([{<]/)[0].trim()
+  const seen = new Set(typeScope.map((i) => nameOf(i.label)))
+  const items = [...typeScope]
+  if (lsp)
+    for (const it of lsp.items) {
+      if (!BARE_IDENT.test(it.label)) continue
+      const n = nameOf(it.label)
+      if (seen.has(n)) continue
+      if (!TYPE_KINDS.has(it.kind ?? -1) && !reg.kind[n]) continue // keep only types
+      seen.add(n)
+      items.push(it)
+    }
+  if (!items.length) return null
+  return { items, isIncomplete: lsp ? lsp.isIncomplete : true }
+}
+
+function mergeVerseScope(scope: LspCompletionItem[], raw: RawCompletion, extMethods: Set<string>): LspCompletionList | null {
+  const lsp = mapCompletion(raw)
+  const nameOf = (l: string): string => l.split(/[([{]/)[0].trim()
+  const seen = new Set(scope.map((i) => nameOf(i.label)))
+  const items = [...scope]
+  if (lsp)
+    for (const it of lsp.items) {
+      if (!BARE_IDENT.test(it.label)) continue // operator / non-identifier dump → not a bare candidate
+      const n = nameOf(it.label)
+      if (it.kind === LSP_KIND_METHOD || extMethods.has(n)) continue // needs a receiver → not a bare candidate
+      if (seen.has(n)) continue
+      // verse-lsp tags language built-ins/reserved (int/float/char/true/false/…) as Keyword(14);
+      // surface them with the `#` "official built-in" icon instead of the generic keyword key.
+      if (it.kind === LSP_KIND_KEYWORD) it.kind = VERSE_BUILTIN_KIND
+      seen.add(n)
+      items.push(it)
+    }
+  if (!items.length) return null
+  return { items, isIncomplete: lsp ? lsp.isIncomplete : true }
+}
+
 /** The character immediately left of an LSP position in `text` — for trigger-char detection. */
 function charBefore(text: string, pos: LspPos): string {
   const lines = text.split('\n')
@@ -732,41 +802,57 @@ class LspManager {
     await clearVerseExe()
   }
 
-  /** Hover info (markdown signature + docs) at an LSP (0-based) position. */
-  async hover(cwd: string, relPath: string, pos: LspPos): Promise<LspHoverResult | null> {
-    const ctx = await this.prep(cwd, relPath)
-    if (!ctx) return null
-    const r = await ctx.rpc.request<{ contents?: unknown } | null>('textDocument/hover', {
-      textDocument: { uri: ctx.uri },
+  /**
+   * Hover info (markdown signature + docs) at an LSP (0-based) position. `text` is the live editor
+   * buffer; when present we push it to the server (didChange) and feed it to the Verse helpers, so
+   * hover reflects UNSAVED edits — without it, hovering inside a freshly-typed (not-yet-saved)
+   * function reads stale/absent disk content at a shifted line and shows nothing.
+   */
+  async hover(cwd: string, relPath: string, pos: LspPos, text?: string): Promise<LspHoverResult | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return null
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    if (def.kind === 'external' && !def.command('')) return null
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return null
+    try {
+      await s.ready
+    } catch {
+      return null
+    }
+    // live buffer → didChange (reflects unsaved edits); no buffer → the disk-synced doc
+    const uri = text != null ? this.syncBuffer(s, def, abs, text) : await this.openDoc(s, def, abs)
+    const r = await s.rpc.request<{ contents?: unknown } | null>('textDocument/hover', {
+      textDocument: { uri },
       position: pos
     })
     const contents = hoverMarkdown(r?.contents)
-    const abs = this.resolve(cwd, relPath)
-    const def = abs ? serverDefFor(abs) : null
-    if (def?.id === 'verse' && abs) {
+    if (def.id === 'verse') {
       // 0) `?` 옵션 연산자 — verse-lsp도 글로서리(wordAt)도 기호는 못 잡으므로 위치로 판별해 설명.
-      const qdoc = await verseSymbolDoc(abs, pos.line, pos.character).catch(() => null)
+      const qdoc = await verseSymbolDoc(abs, pos.line, pos.character, text).catch(() => null)
       if (qdoc) return { contents: qdoc }
       // 1) 키워드·지정자·속성·내장 타입은 우리 용어집 설명으로. 내장 타입(int/void…)은 LSP가
       //    이름만 주므로 여기서 덮어쓴다 — 그래서 LSP 응답 유무와 무관하게 가장 먼저 본다.
-      const gloss = await verseKeywordDoc(abs, pos.line, pos.character).catch(() => null)
+      const gloss = await verseKeywordDoc(abs, pos.line, pos.character, text).catch(() => null)
       if (gloss) return { contents: gloss }
       // 2) 지역변수·매개변수: verse-lsp는 선언부엔 호버가 없고, 사용처엔 `:type` 시그니처만 줘서
       //    렌더러가 'Constant'로 오분류한다. 파일을 스캔해 먼저 판별하고 'Parameter'/'Local Variable'
       //    로 덮어쓴다(클래스 필드는 들여쓰기로 제외 → verse-lsp가 처리). 타입은 선언 주석 또는
       //    verse-lsp가 사용처에서 준 추론 타입(verseHoverType)으로 채운다.
-      const localSig = await verseLocalHover(abs, pos.line, pos.character, verseHoverType(contents)).catch(() => null)
+      const localSig = await verseLocalHover(abs, pos.line, pos.character, verseHoverType(contents), text).catch(() => null)
       if (localSig) return { contents: localSig }
       // 3) 실제 심볼: verse-lsp 호버는 `(/path:)name<specs>`만 줄 뿐 종류 키워드(class/struct…)도
       //    문서 주석도 안 싣는다. definition으로 선언을 찾아 그 줄에서 종류를 읽어 시그니처 앞에
       //    박고(그래야 카드가 'Type'이 아니라 'Class'로 뜬다) 위의 `# …`/@doc 주석도 붙인다.
       if (contents) {
-        const { doc, kind } = await this.verseDefInfo(ctx.rpc, ctx.uri, pos).catch(() => ({ doc: '', kind: null }))
+        const { doc, kind } = await this.verseDefInfo(s.rpc, uri, pos, abs, text).catch(() => ({ doc: '', kind: null }))
         const body = kind ? injectVerseKind(contents, kind) : contents
         return { contents: doc ? body + '\n\n' + doc : body }
       }
       // 4) 호버가 아예 없으면 선언부 — 그 줄에서 카드를 합성한다(+ 그 위 문서 주석).
-      const declSig = await verseDeclHover(abs, pos.line, pos.character).catch(() => null)
+      const declSig = await verseDeclHover(abs, pos.line, pos.character, text).catch(() => null)
       if (declSig) return { contents: declSig }
     }
     return contents ? { contents } : null
@@ -778,7 +864,13 @@ class LspManager {
    * is a type definition — so the hover card can label an external type reference 'Class' rather
    * than the generic 'Type'. Works on the user's code and on API digests.
    */
-  private async verseDefInfo(rpc: StdioRpc, uri: string, pos: LspPos): Promise<{ doc: string; kind: string | null }> {
+  private async verseDefInfo(
+    rpc: StdioRpc,
+    uri: string,
+    pos: LspPos,
+    abs?: string,
+    text?: string
+  ): Promise<{ doc: string; kind: string | null }> {
     const d = await rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
       textDocument: { uri },
       position: pos
@@ -791,20 +883,43 @@ class LspManager {
     if (!turi || !turi.startsWith('file:') || typeof line !== 'number') return { doc: '', kind: null }
     try {
       const file = fileURLToPath(turi)
-      const lines = (await fsp.readFile(file, 'utf8')).split(/\r?\n/)
+      // definition lands in the SAME (currently-edited) file → read the live buffer, not stale disk,
+      // so a just-typed type's kind/doc resolve. Cross-file/digest targets stay disk-read (saved).
+      const live =
+        abs != null && text != null && path.resolve(file).toLowerCase() === path.resolve(abs).toLowerCase()
+          ? text
+          : undefined
+      const lines = (live != null ? live : await fsp.readFile(file, 'utf8')).split(/\r?\n/)
       const km = /:=\s*(class|struct|enum|interface|module)\b/.exec(lines[line] ?? '')
-      return { doc: await verseDocAt(file, line), kind: km ? km[1] : null }
+      return { doc: await verseDocAt(file, line, live), kind: km ? km[1] : null }
     } catch {
       return { doc: '', kind: null }
     }
   }
 
-  /** Definition target(s) for the symbol at an LSP (0-based) position. */
-  async definition(cwd: string, relPath: string, pos: LspPos): Promise<LspLocation[]> {
-    const ctx = await this.prep(cwd, relPath)
-    if (!ctx) return []
-    const r = await ctx.rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
-      textDocument: { uri: ctx.uri },
+  /**
+   * Definition target(s) for the symbol at an LSP (0-based) position. `text` is the live editor
+   * buffer; when present we push it (didChange) so both the clicked position AND a same-file target
+   * line are in the on-screen coordinate system — without it, jumping to a symbol you just typed
+   * (unsaved) resolves against stale disk content and lands on the wrong line (or nothing).
+   */
+  async definition(cwd: string, relPath: string, pos: LspPos, text?: string): Promise<LspLocation[]> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return []
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return []
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return []
+    if (def.kind === 'external' && !def.command('')) return []
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return []
+    try {
+      await s.ready
+    } catch {
+      return []
+    }
+    const uri = text != null ? this.syncBuffer(s, def, abs, text) : await this.openDoc(s, def, abs)
+    const r = await s.rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
+      textDocument: { uri },
       position: pos
     })
     const list = Array.isArray(r) ? r : r ? [r] : []
@@ -831,7 +946,7 @@ class LspManager {
         const safe = (s: string): string => s.replace(/[^\w.\-]/g, '_')
         const file = path.join(METADATA_DIR, safe(meta.AssemblyName), safe(meta.TypeName) + '.cs')
         if (!fs.existsSync(file)) {
-          const m = await ctx.rpc.request<{ Source?: string } | null>('o#/metadata', { ...meta, Timeout: 5000 }, 15000)
+          const m = await s.rpc.request<{ Source?: string } | null>('o#/metadata', { ...meta, Timeout: 5000 }, 15000)
           if (!m?.Source) continue
           await fsp.mkdir(path.dirname(file), { recursive: true })
           await fsp.writeFile(file, m.Source)
@@ -889,10 +1004,11 @@ class LspManager {
     let r = await promise.catch(() => null)
     if (s.lastComplId === id) s.lastComplId = undefined
     if (def.id === 'verse') {
-      // Member access → resolve the receiver's type ACCURATELY (verse-lsp hover tracks it), then
-      // enumerate that type's members from our scan map (verse-lsp won't list them). A known type
-      // name resolves instantly; hover handles vars/params/members/chains; regex is the cold/fail
-      // fallback. Show ONLY these members — the LSP's lexical-scope items are noise for a `.`.
+      // ── Member access (`receiver.partial`) ──────────────────────────────────────────────
+      // verse-lsp returns the lexical SCOPE here (locals+globals), never the receiver's members. So
+      // resolve the receiver's type ACCURATELY (hover tracks vars/params/members/chains; a known type
+      // name resolves instantly; regex is the cold/fail fallback) and list THAT type's members from our
+      // scan map. Show ONLY these — the LSP's lexical-scope items are noise right after a `.`.
       const mctx = verseMemberContext(text, pos)
       if (mctx) {
         let type = verseHasType(root, text, mctx.receiver) ? mctx.receiver : null
@@ -908,16 +1024,22 @@ class LspManager {
         }
         if (!type) type = verseResolveTypeRegex(root, text, mctx.receiver, pos.line)
         if (type) {
-          const members = verseTypeMembers(root, text, type)
+          // a `Self.` receiver may see the class's own private members; an external `obj.` may not
+          const members = verseTypeMembers(root, text, type, mctx.receiver === 'Self')
           if (members.length) return { items: members, isIncomplete: false }
         }
+        // member access on an unresolved receiver — fall back to whatever verse-lsp gave (often
+        // nothing), but do NOT inject scope identifiers: locals/functions are wrong right after a `.`.
+        return mapCompletion(r)
       }
-      // Identifier completion on a freshly-opened file: verse-lsp returns an EMPTY list while it's
-      // still compiling (cold start) — its scope is never genuinely empty. Retry briefly until it
-      // populates, so `M`→`Mix` works on the first try instead of needing several retries.
+      // ── Identifier completion (no `.`) ──────────────────────────────────────────────────
+      // verse-lsp's lexical scope only populates when the file COMPILES — which it rarely does while
+      // you type — so the user's own locals/params/functions/types disappear. Scan them from the live
+      // buffer + project and merge OVER verse-lsp's list so they ALWAYS appear with the right kind.
+      // Only spin for a cold server when even our scan is empty (a brand-new / near-empty file).
+      const scope = verseScopeCompletions(root, text, pos)
       const isEmpty = (x: RawCompletion): boolean => !x || (Array.isArray(x) ? x.length === 0 : !x.items?.length)
-      let tries = 0
-      for (; tries < 6 && isEmpty(r); tries++) {
+      for (let tries = 0; tries < 4 && isEmpty(r) && !scope.length; tries++) {
         await new Promise((res) => setTimeout(res, 120))
         if (s.lastComplId != null) s.rpc.cancel(s.lastComplId)
         const rr = s.rpc.requestId<RawCompletion>(
@@ -929,6 +1051,15 @@ class LspManager {
         r = await rr.promise.catch(() => null)
         if (s.lastComplId === rr.id) s.lastComplId = undefined
       }
+      // type-annotation slot (`: Type`) → types only (no locals/functions); else the full scope merge
+      if (verseIsTypePosition(text, pos)) {
+        const typeScope = [
+          ...verseBuiltinTypeItems(),
+          ...scope.filter((it) => TYPE_KINDS.has(it.kind ?? -1))
+        ]
+        return mergeVerseTypes(typeScope, r, verseMemberDbRegistry(root))
+      }
+      return mergeVerseScope(scope, r, verseExtMethods(root))
     }
     return mapCompletion(r)
   }

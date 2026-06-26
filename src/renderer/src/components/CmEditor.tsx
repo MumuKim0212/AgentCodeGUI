@@ -28,6 +28,7 @@ import {
 import { highlightSelectionMatches } from '@codemirror/search'
 import { indentUnit, bracketMatching } from '@codemirror/language'
 import type { LspSemanticTokens, LspLocation, LspCompletionItem } from '@shared/protocol'
+import { VERSE_BUILTIN_KIND } from '@shared/protocol'
 import { highlighting } from '../lib/cmHljs'
 import { ensureVerseRegistry, onVerseRegChange } from '../lib/verseRegistry'
 import { buildSemDict, type StructOv } from '../lib/semTokens'
@@ -58,7 +59,8 @@ const COMPL_KIND: Record<number, string> = {
   2: 'method', 3: 'function', 4: 'function', 5: 'property', 6: 'variable', 7: 'class',
   8: 'interface', 9: 'namespace', 10: 'property', 13: 'enum', 14: 'keyword', 15: 'text',
   16: 'constant', 17: 'text', 20: 'enum', 21: 'constant', 22: 'struct', 23: 'variable',
-  24: 'operator', 25: 'type'
+  24: 'operator', 25: 'type',
+  [VERSE_BUILTIN_KIND]: 'builtin' // Verse 공식 built-in(타입 int/float… · 리터럴 true/false) — # 아이콘 + 키워드(주황)색
 }
 function complKind(kind?: number): string {
   return (kind != null && COMPL_KIND[kind]) || 'variable'
@@ -357,7 +359,7 @@ export const CmEditor = forwardRef<
     if (!view || !lspRef.current) return
     view.dispatch({ selection: { anchor: offset } })
     window.api.lsp
-      .definition(cwdRef.current, pathRef.current, toLspPos(view, offset))
+      .definition(cwdRef.current, pathRef.current, toLspPos(view, offset), view.state.doc.toString())
       .then((locs) => {
         if (locs?.[0]) onNavRef.current?.(locs[0])
       })
@@ -427,7 +429,11 @@ export const CmEditor = forwardRef<
     const lspHover = hoverTooltip(
       async (v, pos) => {
         if (!lspRef.current) return null
-        const r = await window.api.lsp.hover(cwdRef.current, pathRef.current, toLspPos(v, pos)).catch(() => null)
+        // 라이브 버퍼 전체를 같이 보낸다(미저장 편집 반영) — 안 그러면 방금 새로 정의한 함수 안에서
+        // 호버 위치/내용이 디스크 파일과 어긋나 호버가 안 뜬다(completion과 동일한 이유).
+        const r = await window.api.lsp
+          .hover(cwdRef.current, pathRef.current, toLspPos(v, pos), v.state.doc.toString())
+          .catch(() => null)
         if (!r || !r.contents) return null
         const md = r.contents
         return {
@@ -445,7 +451,7 @@ export const CmEditor = forwardRef<
             if (lang === 'csharp') {
               void (async () => {
                 const locs = await window.api.lsp
-                  .definition(cwdRef.current, pathRef.current, toLspPos(v, pos))
+                  .definition(cwdRef.current, pathRef.current, toLspPos(v, pos), v.state.doc.toString())
                   .catch(() => null)
                 const loc = locs?.[0]
                 if (!loc || !alive) return

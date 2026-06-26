@@ -1,4 +1,4 @@
-import { verseReg, verseInheritedMembers } from './verseRegistry'
+import { verseReg, verseInheritedMembers, verseInheritedMethods } from './verseRegistry'
 
 // ── B-lite: approximate member / local / module colouring for .verse ─────────
 // verse-lsp exposes no semantic tokens / documentSymbol, and Verse's `Name:type` syntax is
@@ -33,9 +33,12 @@ function indentLevel(line: string): number {
 const TYPE_HEADER = /^([A-Za-z_]\w*)\s*(?:<[^>]*>)*\s*:=\s*(class|struct|interface|enum)\b/
 const VAR_FIELD = /^(?:var|set)\s+([A-Za-z_]\w*)/
 const TYPED_FIELD = /^([A-Za-z_]\w*)\s*(?:<[^>]*>)*\s*:/
+// a class-body method: a name (+ specifiers) immediately before '(' — `OnTick(`, `OnBegin<override>(`
+const METHOD_DECL = /^([A-Za-z_]\w*)\s*(?:<[^>]*>)*\s*\(/
 
 export interface VerseScopes {
   members: Set<string> // this file's class/struct fields + members inherited from registry supers
+  methods: Set<string> // this file's class methods — so a bare method reference (callback) reads as a function
   locals: Set<string> // parameters + local bindings
   fileTypes: Map<string, string> // this file's own type defs → kind (class|struct|enum|interface)
 }
@@ -48,6 +51,7 @@ export interface VerseScopes {
  */
 export function verseScopes(code: string): VerseScopes {
   const members = new Set<string>()
+  const methods = new Set<string>()
   const fileTypes = new Map<string, string>() // this file's type defs → kind
   const supers: string[] = [] // superclass names of this file's classes → expand inherited members
   const bodyIndents: number[] = [] // body indent (= header indent + 1) of each open class/struct
@@ -75,6 +79,11 @@ export function verseScopes(code: string): VerseScopes {
       continue
     }
     if (!bodyIndents.length || lvl !== bodyIndents[bodyIndents.length - 1]) continue
+    const md = METHOD_DECL.exec(trimmed) // `Name(… ` — a method (function member), not a field
+    if (md) {
+      methods.add(md[1])
+      continue
+    }
     const v = VAR_FIELD.exec(trimmed)
     if (v) {
       members.add(v[1])
@@ -84,8 +93,11 @@ export function verseScopes(code: string): VerseScopes {
     if (t) members.add(t[1])
   }
   // inherited members from the registry (engine bases like `component`) so e.g. `TickEvents.` reads
-  // as a member (blue), not an external module (purple).
-  for (const s of supers) if (s) for (const m of verseInheritedMembers(s)) members.add(m)
+  // as a member (blue), not an external module (purple). Inherited METHODS go to `methods` (mint),
+  // the rest (data fields) to `members` (member colour) — collect methods first so the field pass
+  // can exclude them.
+  for (const s of supers) if (s) for (const m of verseInheritedMethods(s)) methods.add(m)
+  for (const s of supers) if (s) for (const m of verseInheritedMembers(s)) if (!methods.has(m)) members.add(m)
 
   // Locals: parameters (`(Name:` / `, ?Name:`), `var`/`set` bindings, and walrus `Name :=`
   // (failable `if (X := …)`, loop `for (X := …)`, plain local). Pattern-matched over the whole
@@ -97,7 +109,7 @@ export function verseScopes(code: string): VerseScopes {
   for (const m of code.matchAll(/([A-Za-z_]\w*)\s*:=\s*(?!(?:class|struct|enum|interface|module)\b)/g))
     locals.add(m[1])
   for (const m of code.matchAll(/[(,]\s*\??\s*([A-Za-z_]\w*)\s*:(?!=)/g)) locals.add(m[1])
-  return { members, locals, fileTypes }
+  return { members, methods, locals, fileTypes }
 }
 
 // Recolour highlight.js output for .verse from FACTS, not guesses. The grammar no longer assumes
@@ -108,7 +120,7 @@ export function verseScopes(code: string): VerseScopes {
 //   • everything else (locals, params, unknown receivers) → default colour (span stripped)
 // Both the viewer and the editor go through here, so both get it.
 export function recolorVerse(html: string, scopes: VerseScopes): string {
-  const { members, fileTypes } = scopes
+  const { members, methods, fileTypes } = scopes
   const reg = verseReg()
   const typeKind = (name: string): string | undefined => fileTypes.get(name) ?? reg.kind[name]
   // class/interface → the class colour; struct/enum → the distinct lighter type colour
@@ -120,6 +132,9 @@ export function recolorVerse(html: string, scopes: VerseScopes): string {
     /<span class="hljs-variable">([A-Za-z_]\w*)<\/span>(\.?)/g,
     (full, name: string, dot: string) => {
       if (members.has(name)) return full // member (own or inherited) → member colour, keep
+      // a bare method reference (a callback passed without `()`) — colour it like a function (mint),
+      // matching `OnTick(…)` at its definition/call. The grammar only catches a name BEFORE '(' .
+      if (methods.has(name)) return `<span class="hljs-title function_">${name}</span>` + dot
       const k = typeKind(name)
       if (k) return typeSpan(name, k) + dot // confirmed type → type colour by kind
       return name + dot // local / parameter / unknown → default (white)

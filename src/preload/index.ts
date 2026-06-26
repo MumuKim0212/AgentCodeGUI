@@ -59,9 +59,10 @@ const api: WindowApi = {
   },
   lsp: {
     status: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspStatus, { cwd, relPath }),
-    hover: (cwd: string, relPath: string, pos: LspPos) => ipcRenderer.invoke(IPC.lspHover, { cwd, relPath, pos }),
-    definition: (cwd: string, relPath: string, pos: LspPos) =>
-      ipcRenderer.invoke(IPC.lspDefinition, { cwd, relPath, pos }),
+    hover: (cwd: string, relPath: string, pos: LspPos, text?: string) =>
+      ipcRenderer.invoke(IPC.lspHover, { cwd, relPath, pos, text }),
+    definition: (cwd: string, relPath: string, pos: LspPos, text?: string) =>
+      ipcRenderer.invoke(IPC.lspDefinition, { cwd, relPath, pos, text }),
     semanticTokens: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspSemanticTokens, { cwd, relPath }),
     cachedTokens: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspCachedTokens, { cwd, relPath }),
     completion: (cwd: string, relPath: string, pos: LspPos, text: string) =>

@@ -280,10 +280,10 @@ const VERSE_GLOSSARY: Record<string, string> = {
  * Every glossary key is a Verse reserved word, so it can't collide with a user identifier —
  * membership alone is enough (wordAt matches whole tokens, so `set` won't fire inside `settings`).
  */
-export async function verseKeywordDoc(absFile: string, line: number, col: number): Promise<string | null> {
+export async function verseKeywordDoc(absFile: string, line: number, col: number, text?: string): Promise<string | null> {
   let raw: string
   try {
-    raw = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)[line]
+    raw = (text != null ? text : await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)[line]
   } catch {
     return null
   }
@@ -305,10 +305,10 @@ const VERSE_Q_PARAM = '기본값이 있어 생략할 수 있는 이름 매개변
  * optional NAMED parameter — `?` then a name then `:`), and `?type` (an option TYPE — anything
  * else). Returns markdown (same shape as the keyword glossary), or null when the caret isn't on `?`.
  */
-export async function verseSymbolDoc(absFile: string, line: number, col: number): Promise<string | null> {
+export async function verseSymbolDoc(absFile: string, line: number, col: number, text?: string): Promise<string | null> {
   let raw: string
   try {
-    raw = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)[line]
+    raw = (text != null ? text : await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)[line]
   } catch {
     return null
   }
@@ -326,10 +326,11 @@ export async function verseSymbolDoc(absFile: string, line: number, col: number)
   return m[2] ? VERSE_Q_PARAM : VERSE_Q_OPTION
 }
 
-/** Doc comment immediately above the declaration at `line` in `absFile` (own code or digest). */
-export async function verseDocAt(absFile: string, line: number): Promise<string> {
+/** Doc comment immediately above the declaration at `line` in `absFile` (own code or digest).
+ *  `text` (the live buffer) is used instead of disk when the declaration is in the edited file. */
+export async function verseDocAt(absFile: string, line: number, text?: string): Promise<string> {
   try {
-    const lines = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
+    const lines = (text != null ? text : await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
     return extractVerseDoc(lines, line)
   } catch {
     return ''
@@ -368,10 +369,10 @@ function verseEnclosingType(lines: string[], declLine: number): string | null {
  * is the name the line declares, so it never invents a card for an unrelated token.
  * Returns a ```verse fenced markdown string, or null.
  */
-export async function verseDeclHover(absFile: string, line: number, col: number): Promise<string | null> {
+export async function verseDeclHover(absFile: string, line: number, col: number, text?: string): Promise<string | null> {
   let lines: string[]
   try {
-    lines = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
+    lines = (text != null ? text : await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
   } catch {
     return null
   }
@@ -445,11 +446,12 @@ export async function verseLocalHover(
   absFile: string,
   line: number,
   col: number,
-  typeHint?: string
+  typeHint?: string,
+  text?: string
 ): Promise<string | null> {
   let lines: string[]
   try {
-    lines = (await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
+    lines = (text != null ? text : await fsp.readFile(absFile, 'utf8')).split(/\r?\n/)
   } catch {
     return null
   }

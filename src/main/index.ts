@@ -695,11 +695,11 @@ function registerIpc(): void {
   ipcMain.handle(IPC.lspStatus, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.status(a.cwd || '', a.relPath)
   )
-  ipcMain.handle(IPC.lspHover, async (_e, a: { cwd: string; relPath: string; pos: LspPos }) =>
-    lspManager.hover(a.cwd || '', a.relPath, a.pos).catch(() => null)
+  ipcMain.handle(IPC.lspHover, async (_e, a: { cwd: string; relPath: string; pos: LspPos; text?: string }) =>
+    lspManager.hover(a.cwd || '', a.relPath, a.pos, a.text).catch(() => null)
   )
-  ipcMain.handle(IPC.lspDefinition, async (_e, a: { cwd: string; relPath: string; pos: LspPos }) =>
-    lspManager.definition(a.cwd || '', a.relPath, a.pos).catch(() => [])
+  ipcMain.handle(IPC.lspDefinition, async (_e, a: { cwd: string; relPath: string; pos: LspPos; text?: string }) =>
+    lspManager.definition(a.cwd || '', a.relPath, a.pos, a.text).catch(() => [])
   )
   ipcMain.handle(IPC.lspSemanticTokens, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.semanticTokens(a.cwd || '', a.relPath).catch(() => null)

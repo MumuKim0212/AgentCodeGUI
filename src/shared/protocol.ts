@@ -173,6 +173,11 @@ export interface LspSemanticTokens {
   /** modifier bit position → LSP token modifier name (the server's legend) */
   mods: string[]
 }
+/** A private CompletionItemKind (outside LSP's 1–25) we tag Verse language built-ins with — built-in
+ *  types (int/float/…) AND reserved literals/keywords (true/false/…). The renderer gives them their own
+ *  `#` "official built-in" icon in the keyword colour, distinct from user-defined symbols. */
+export const VERSE_BUILTIN_KIND = 1001
+
 /** One completion candidate — a trimmed LSP CompletionItem the renderer turns into a CM option. */
 export interface LspCompletionItem {
   label: string
@@ -202,7 +207,8 @@ export interface LspCompletionList {
 export interface VerseRegistry {
   kind: Record<string, 'class' | 'struct' | 'enum' | 'interface'> // type name → its kind
   supers: Record<string, string[]> // type name → super-type names (for inherited-member resolution)
-  members: Record<string, string[]> // type name → its direct member names
+  members: Record<string, string[]> // type name → its direct member names (fields + methods)
+  methods: Record<string, string[]> // type name → its method names (subset of members) — coloured as functions
   enumValues: Record<string, string[]> // enum name → its value names (subset of members)
   setters: Record<string, Record<string, string>> // type → member → SETTER (write) access, when explicit
 }

@@ -100,10 +100,12 @@ export interface WindowApi {
   lsp: {
     /** current status for a file — asking also warms up the project's server */
     status(cwd: string, relPath: string): Promise<LspStatus>
-    /** hover info (markdown) for the symbol at an LSP (0-based) position */
-    hover(cwd: string, relPath: string, pos: LspPos): Promise<LspHoverResult | null>
-    /** definition target(s) for the symbol at an LSP (0-based) position */
-    definition(cwd: string, relPath: string, pos: LspPos): Promise<LspLocation[]>
+    /** hover info (markdown) for the symbol at an LSP (0-based) position. `text` is the live editor
+     *  buffer — pass it so hover reflects unsaved edits (e.g. a freshly-typed function). */
+    hover(cwd: string, relPath: string, pos: LspPos, text?: string): Promise<LspHoverResult | null>
+    /** definition target(s) for the symbol at an LSP (0-based) position. `text` is the live editor
+     *  buffer — pass it so jumping to a just-typed (unsaved) symbol resolves against on-screen content. */
+    definition(cwd: string, relPath: string, pos: LspPos, text?: string): Promise<LspLocation[]>
     /** semantic highlighting tokens for a document — null when unsupported */
     semanticTokens(cwd: string, relPath: string): Promise<LspSemanticTokens | null>
     /** disk-cached tokens for instant paint on open (no server spawn) — null when none */

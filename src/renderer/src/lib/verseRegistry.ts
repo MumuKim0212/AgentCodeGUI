@@ -4,7 +4,7 @@ import type { VerseRegistry } from '@shared/protocol'
 // project and merged here (engine digests are shared across projects; user-type collisions are rare).
 // recolorVerse / verseScopes read it SYNCHRONOUSLY; it's populated async on file open, and a version
 // bump notifies open editors to re-decorate the one time it arrives.
-let reg: VerseRegistry = { kind: {}, supers: {}, members: {}, enumValues: {}, setters: {} }
+let reg: VerseRegistry = { kind: {}, supers: {}, members: {}, methods: {}, enumValues: {}, setters: {} }
 let version = 0
 const fetched = new Set<string>()
 const listeners = new Set<() => void>()
@@ -32,6 +32,7 @@ export async function ensureVerseRegistry(cwd: string, relPath: string): Promise
     kind: { ...reg.kind, ...r.kind },
     supers: { ...reg.supers, ...r.supers },
     members: { ...reg.members, ...r.members },
+    methods: { ...reg.methods, ...r.methods },
     enumValues: { ...reg.enumValues, ...r.enumValues },
     setters: { ...reg.setters, ...r.setters }
   }
@@ -45,5 +46,14 @@ export function verseInheritedMembers(typeName: string, out: Set<string> = new S
   seen.add(typeName)
   for (const m of reg.members[typeName] ?? []) out.add(m)
   for (const s of reg.supers[typeName] ?? []) verseInheritedMembers(s, out, seen)
+  return out
+}
+
+/** Methods (function members) of `typeName` incl. inherited — coloured as functions, not data members. */
+export function verseInheritedMethods(typeName: string, out: Set<string> = new Set(), seen: Set<string> = new Set()): Set<string> {
+  if (seen.has(typeName)) return out
+  seen.add(typeName)
+  for (const m of reg.methods[typeName] ?? []) out.add(m)
+  for (const s of reg.supers[typeName] ?? []) verseInheritedMethods(s, out, seen)
   return out
 }
