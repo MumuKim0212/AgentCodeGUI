@@ -27,7 +27,7 @@ import {
 } from '@codemirror/autocomplete'
 import { highlightSelectionMatches } from '@codemirror/search'
 import { indentUnit, bracketMatching } from '@codemirror/language'
-import type { LspSemanticTokens, LspLocation } from '@shared/protocol'
+import type { LspSemanticTokens, LspLocation, LspCompletionItem } from '@shared/protocol'
 import { highlighting } from '../lib/cmHljs'
 import { ensureVerseRegistry, onVerseRegChange } from '../lib/verseRegistry'
 import { buildSemDict, type StructOv } from '../lib/semTokens'
@@ -73,6 +73,57 @@ function splitSig(label: string): { name: string; sig: string } {
   // 이름은 매칭용으로 깔끔히(trim), 중괄호 앞 공백은 시그니처에 살려 `kind {…}`처럼 띄워 보인다
   const gap = label[cut - 1] === ' ' ? ' ' : ''
   return { name: label.slice(0, cut).trimEnd(), sig: gap + label.slice(cut) }
+}
+
+// 한 자동완성 세션의 후보(universe) — 서버 라벨을 이름/시그니처로 가르고 오버로드를 하나로 합친 결과.
+interface ComplCand {
+  name: string
+  sig: string
+  detail?: string // sig가 비었을 때의 보조 타입 텍스트(LSP detail)
+  kind?: number
+  doc?: string
+  hasParen: boolean // 값 매개변수 괄호 '(' 있음 → 호출 형태로 삽입
+  hasParams: boolean // 괄호 안에 인자 있음 → 커서를 괄호 안에
+  order: number // 서버가 준 순서(관련도) — 동점 타이브레이커
+  overloads: number // 같은 이름의 추가 시그니처 수(0 = 단일)
+}
+
+// 서버 완성 목록 → 후보 universe. ① 이름 없는 매개변수 placeholder 정리, ② 구조체 아키타입
+// (`이름 {…}`) 중복 제거, ③ 같은 이름의 오버로드를 한 항목으로 합치고 추가 개수만 센다 —
+// `Min(X:int,Y:int)`·`Min(X:float,Y:float)`가 각각 뜨던 걸 `Min  +1` 하나로(다른 IDE처럼).
+function buildCandidates(items: LspCompletionItem[]): ComplCand[] {
+  // verse-lsp placeholder: 이름 없는 매개변수 `__dupe___unnamed_parameter_1:t` → `t`
+  const clean = (s: string): string => s.replace(/__dupe___unnamed_parameter_\d+\s*:?\s*/g, '')
+  // '이름'(타입)과 '이름 {필드 := …}'(아키타입)이 같이 오면 아키타입 변형은 버린다(같은 이름 두 번 → 혼란).
+  const bare = new Set(
+    items.map((it) => splitSig(clean(it.label))).filter((s) => !s.sig.includes('{')).map((s) => s.name)
+  )
+  const byName = new Map<string, ComplCand>()
+  let order = 0
+  for (const it of items) {
+    const label = clean(it.label)
+    const { name, sig } = splitSig(label)
+    if (sig.includes('{') && bare.has(name)) continue // 아키타입 중복
+    const ex = byName.get(name)
+    if (ex) {
+      // 같은 이름 = 오버로드. 시그니처가 실제로 다를 때만 세고(완전 중복 라벨은 무시) 첫 항목만 남긴다.
+      if (sig && sig !== ex.sig) ex.overloads++
+      continue
+    }
+    const paren = label.indexOf('(')
+    byName.set(name, {
+      name,
+      sig,
+      detail: it.detail,
+      kind: it.kind,
+      doc: it.documentation || undefined,
+      hasParen: paren >= 0,
+      hasParams: paren >= 0 && !/^\(\s*\)/.test(label.slice(paren)),
+      order: order++,
+      overloads: 0
+    })
+  }
+  return [...byName.values()]
 }
 
 // 정의 이동 도착 줄을 잠깐 깜빡이는 라인 데코레이션 (뷰어의 .fvl.flash와 같은 fvl-flash 애니메이션).
@@ -437,51 +488,30 @@ export const CmEditor = forwardRef<
         .completion(cwdRef.current, pathRef.current, pos, ctx.state.doc.toString())
         .catch(() => null)
       if (!list || !list.items.length) return null
-      // verse-lsp 내부 placeholder 정리: 이름 없는 매개변수의 `__dupe___unnamed_parameter_1:t` → `t`
-      const clean = (s: string): string => s.replace(/__dupe___unnamed_parameter_\d+\s*:?\s*/g, '')
-      // 구조체/클래스는 '이름'(타입)과 '이름 {필드 := …}'(아키타입) 두 항목을 같이 준다 → 같은 이름이
-      // 두 번 떠 헷갈린다. 기본 '이름' 항목이 있으면 아키타입({…}) 변형은 버리고, 완전 중복도 정리.
-      const bare = new Set(
-        list.items.map((it) => splitSig(clean(it.label))).filter((s) => !s.sig.includes('{')).map((s) => s.name)
-      )
-      const seen = new Set<string>()
-      const items = list.items.filter((it) => {
-        const label = clean(it.label)
-        if (seen.has(label)) return false
-        seen.add(label)
-        const { name, sig } = splitSig(label)
-        return !(sig.includes('{') && bare.has(name))
-      })
-      const options: Completion[] = items.map((it, i) => {
-        // 이름(매칭 대상)과 시그니처를 가른다 — 시그니처는 흐린 detail로
-        const label = clean(it.label)
-        const { name, sig } = splitSig(label)
+      // 서버 라벨 → 후보(이름/시그니처 분리, 아키타입 중복 제거, 오버로드 한 항목으로 합치기).
+      // 값 매개변수 괄호가 있으면 호출 형태(`이름()` + 인자 있으면 커서를 괄호 안에)로, 타입 매개변수
+      // '[...]'·식별자는 이름만 박는다. 시그니처는 흐린 detail로, 오버로드가 더 있으면 `+N`을 붙인다.
+      const options: Completion[] = buildCandidates(list.items).map((c) => {
+        const sig = c.sig || c.detail || ''
         const base: Completion = {
-          label: name,
-          detail: sig || it.detail || undefined,
-          type: complKind(it.kind),
-          info: it.documentation || undefined,
+          label: c.name,
+          detail: sig + (c.overloads ? `  +${c.overloads}` : '') || undefined,
+          type: complKind(c.kind),
+          info: c.doc,
           // 서버가 매겨 준 순서(verse-lsp는 관련도순으로 정렬해 보낸다)를 동점일 때의 타이브레이커로
           // 만 쓴다 — 폭을 1 미만으로 좁혀 CM의 접두어 매칭 품질을 뒤엎지 않게 한다.
-          boost: -i / 1000
+          boost: -c.order / 1000
         }
-        // 값 매개변수 괄호 '(...)'가 있으면 호출 형태로 — `이름()` + 커서를 괄호 안에(인자 있으면).
-        // 타입 매개변수 '[...]'는 보통 추론되니 넣지 않고, 그 외(타입/식별자)는 이름만 삽입한다.
-        // 어느 경우든 선언 매개변수 텍스트(name:type)는 박지 않는다.
-        const paren = label.indexOf('(')
-        if (paren >= 0) {
-          const hasParams = !/^\(\s*\)/.test(label.slice(paren))
-          return snippetCompletion(hasParams ? `${name}(\${})` : `${name}()`, base)
-        }
-        return { ...base, apply: name }
+        if (c.hasParen) return snippetCompletion(c.hasParams ? `${c.name}(\${})` : `${c.name}()`, base)
+        return { ...base, apply: c.name }
       })
       return {
         from: word ? word.from : ctx.pos,
         options,
         // 완전한 목록(isIncomplete=false)일 때만 로컬 필터를 허용 — 단어를 더 쳐도 서버 재요청 없이
-        // CM이 거른다(왕복↓·깜빡임↓). 서버가 잘라 보낸 목록(isIncomplete=true)이면 validFor를 빼서
-        // 키 입력마다 다시 묻는다 — 안 그러면 잘린 N개 밖의 심볼(예: 멤버가 수백 개일 때)을 영영
-        // 못 찾는다. (어느 경우든 단어 경계를 벗어나거나 `.` 트리거면 소스가 다시 돌아 새 목록을 받는다.)
+        // CM이 (filterStrict 접두어로) 거른다(왕복↓·깜빡임↓). 서버가 잘라 보낸 목록(isIncomplete=true)
+        // 이면 validFor를 빼서 키 입력마다 다시 묻는다 — 안 그러면 잘린 N개 밖의 심볼(멤버 수백 개 등)을
+        // 영영 못 찾는다. (어느 경우든 단어 경계를 벗어나거나 `.` 트리거면 소스가 다시 돌아 새 목록을 받는다.)
         validFor: list.isIncomplete ? undefined : /^[\w$]*$/
       }
     }
@@ -538,7 +568,9 @@ export const CmEditor = forwardRef<
           EditorView.contentAttributes.of({ spellcheck: 'false' }),
           // LSP 자동완성 — 소스는 lspRef/readOnly로 자체 게이트하므로 항상 달아 둬도 안전.
           // 자체 키맵은 끄고(위에서 completionKeymap을 명시 순서로 넣음) 타이핑 중 자동 발동만 둔다.
-          autocompletion({ override: [lspComplete], defaultKeymap: false, activateOnTyping: true }),
+          // filterStrict: CM 기본 fuzzy(부분수열)를 끄고 '친 글자로 시작하는' 접두어 후보만 남긴다 —
+          // `mi`가 has_dynam·i·cs 같은 흩어진 매칭에 걸려 무관한 항목이 쏟아지던 걸 막는다(다른 IDE처럼).
+          autocompletion({ override: [lspComplete], defaultKeymap: false, activateOnTyping: true, filterStrict: true }),
           // 방금 친 글자가 멤버 트리거(`.`)이거나 식별자 문자면 팝업을 직접 연다. activateOnTyping만으론
           // 파일을 막 연 직후 첫 글자에 팝업이 안 뜨는 경우가 있어(콜드), 명시적으로 발동해 신뢰성을 높인다.
           // (validFor 덕에 단어 도중엔 서버 재요청 없이 로컬 필터만 돌아 비용은 거의 없다.)
