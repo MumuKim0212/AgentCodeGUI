@@ -259,16 +259,9 @@ export const Explorer = memo(function Explorer({
     }
   }, [open])
 
-  // 접힘: 펼치기 버튼 하나만 남는 좁은 레일
-  if (!open) {
-    return (
-      <div className="explorer-rail">
-        <button className="exp-rail-btn has-tip" data-tip="탐색기 열기" aria-label="탐색기 열기" onClick={onToggle}>
-          <IconChevRight size={14} />
-        </button>
-      </div>
-    )
-  }
+  // 접힘: 잔여 레일 없이 완전히 사라진다 — 칼럼이 깔끔하게 닫힌다. 다시 열기는
+  // 채팅 헤더 좌상단의 토글 버튼(단축키 몰라도 클릭) 또는 Ctrl/⌘+F.
+  if (!open) return null
 
   const project = basename(cwd)
 

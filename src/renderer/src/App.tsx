@@ -8,8 +8,8 @@ import { Sidebar, type WorkspaceMode } from './components/Sidebar'
 import { MultiWorkspace } from './components/MultiAgent'
 import { ChatWorkspace } from './components/ChatWorkspace'
 import { getPref, setPref } from './lib/prefs'
-import { ChatHeader, Composer, MessageView, QuestionModal, PermissionModal, SelectionToolbar, WelcomeState, WorkingIndicator, nextMode, pickerModelOf, type PickerState, type ScheduledMsg } from './components/Chat'
-import { AgentPanel, SubAgentModal } from './components/AgentPanel'
+import { ChatHeader, Composer, MessageView, QuestionModal, PermissionModal, SelectionToolbar, WelcomeState, WorkBar, WorkingIndicator, nextMode, pickerModelOf, type PickerState, type ScheduledMsg } from './components/Chat'
+import { SubAgentModal } from './components/AgentPanel'
 import { Explorer } from './components/Explorer'
 import { AskModal } from './components/AskModal'
 import { FolderSwitchDialog } from './components/FolderSwitchDialog'
@@ -74,7 +74,7 @@ function chatId(): string {
 }
 
 // stable callback identity that always calls the latest closure — lets memoized
-// children (Sidebar/AgentPanel) skip re-render on every keystroke without stale
+// children (Sidebar/WorkBar) skip re-render on every keystroke without stale
 // closures or hand-tracked dependency arrays
 function useEvent<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
   const ref = useRef(fn)
@@ -836,7 +836,7 @@ function MainApp({ user }: { user: AppUser }) {
     [chats, activeChatId, state.messages.length, state.status]
   )
 
-  // stable handlers for the memoized Sidebar / AgentPanel
+  // stable handlers for the memoized Sidebar / WorkBar
   const onOpenSettings = useEvent(() => setSettingsOpen(true))
   // 최근 파일 탭: 이 채팅에서 연 파일을 기록. 새 파일만 맨 앞에 끼우고 이미 있는
   // 파일은 자리를 지킨다 — 드래그로 정리한 순서가 다시 열 때마다 출렁이지 않게. 최대 20개.
@@ -965,8 +965,14 @@ function MainApp({ user }: { user: AppUser }) {
           onViewFolderChange={onExplorerView}
         />
 
-        <div className="chat">
-          <ChatHeader title={taskTitle} />
+        <div className="chat chat--code">
+          <ChatHeader
+            title={taskTitle}
+            status={state.status}
+            elapsed={elapsed}
+            explorerHidden={!explorerOpen}
+            onToggleExplorer={toggleExplorer}
+          />
           <RecentFiles
             files={activeChat?.recentFiles ?? []}
             changed={state.files}
@@ -1017,6 +1023,18 @@ function MainApp({ user }: { user: AppUser }) {
             )}
           </div>
           <SelectionToolbar scrollRef={scrollRef} onElaborate={onElaborateSelection} />
+          <WorkBar
+            status={state.status}
+            todos={state.todos}
+            files={state.files}
+            subagents={state.subagents}
+            usage={usage}
+            contextTokens={state.result?.contextTokens ?? null}
+            contextWindow={state.result?.contextWindow ?? null}
+            model={picker.model}
+            onOpenFile={onOpenFile}
+            onOpenSubagent={onOpenSubagent}
+          />
           <Composer
             value={input}
             onChange={setInput}
@@ -1042,21 +1060,12 @@ function MainApp({ user }: { user: AppUser }) {
             contextTokens={state.result?.contextTokens ?? null}
             contextWindow={state.result?.contextWindow ?? null}
             usage={usage}
+            showContext={false}
             cwd={cwd}
             mentionBase={mentionBase}
             inputRef={composerRef}
           />
         </div>
-
-        <AgentPanel
-          status={state.status}
-          elapsed={elapsed}
-          todos={state.todos}
-          files={state.files}
-          subagents={state.subagents}
-          onOpenFile={onOpenFile}
-          onOpenSubagent={onOpenSubagent}
-        />
         </>
         )}
       </div>

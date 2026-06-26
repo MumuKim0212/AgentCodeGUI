@@ -51,7 +51,7 @@ export function TitleBar({ title }: { title: string }) {
     }
     const onDown = (e: MouseEvent): void => {
       if (e.button !== 0) return
-      if ((e.target as HTMLElement).closest('.tb-controls')) return
+      if ((e.target as HTMLElement).closest('.tb-controls, .tb-left')) return
       e.preventDefault()
       downX = e.screenX
       downY = e.screenY
@@ -70,6 +70,9 @@ export function TitleBar({ title }: { title: string }) {
   }, [])
   return (
     <div className="titlebar" ref={barRef}>
+      {/* 사이드바를 접으면 그 "다시 열기" 토글이 여기로 포털된다 (Sidebar.tsx). 비어
+          있으면 :empty로 숨겨 제목 위치에 영향이 없다. */}
+      <span className="tb-left" id="tb-left-slot" />
       {title && <span className="tb-page">{title}</span>}
       <div className="tb-spacer" />
       <div className="tb-controls">

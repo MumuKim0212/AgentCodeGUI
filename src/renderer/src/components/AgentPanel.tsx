@@ -1,6 +1,6 @@
-import { memo, useEffect } from 'react'
+import { useEffect } from 'react'
 import type { AgentStatus, ChangedFile, SubAgentInfo, SubAgentStatus, Todo } from '@shared/protocol'
-import { IconList, IconBot, IconFile, IconChevRight, IconCheck, IconSearch, IconClose } from './icons'
+import { IconBot, IconFile, IconChevRight, IconCheck, IconSearch, IconClose } from './icons'
 import { FileBadge } from './fileType'
 import { Markdown } from './Markdown'
 
@@ -16,7 +16,7 @@ function fmtElapsed(s: number): string {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
-function StatusPill({ status, elapsed }: { status: AgentStatus; elapsed: number }) {
+export function StatusPill({ status, elapsed }: { status: AgentStatus; elapsed: number }) {
   return (
     <div className={'status-pill ' + status}>
       <span className="d" />
@@ -28,7 +28,7 @@ function StatusPill({ status, elapsed }: { status: AgentStatus; elapsed: number 
   )
 }
 
-function Todos({ todos }: { todos: Todo[] }) {
+export function Todos({ todos }: { todos: Todo[] }) {
   const total = todos.length
   const done = todos.filter((t) => t.status === 'done').length
   const pct = total ? Math.round((done / total) * 100) : 0
@@ -54,7 +54,7 @@ function Todos({ todos }: { todos: Todo[] }) {
   )
 }
 
-function FileRow({ f, onOpen }: { f: ChangedFile; onOpen: (f: ChangedFile) => void }) {
+export function FileRow({ f, onOpen }: { f: ChangedFile; onOpen: (f: ChangedFile) => void }) {
   const slash = f.path.lastIndexOf('/')
   const dir = slash >= 0 ? f.path.slice(0, slash + 1) : ''
   const name = slash >= 0 ? f.path.slice(slash + 1) : f.path
@@ -92,7 +92,7 @@ const SA_STATUS_LABEL: Record<SubAgentStatus, string> = {
 // compact row — title + one-line description + status. The detail/output (full
 // description, tools, result) lives in the card opened on click, so the panel
 // stays tidy even with several subagents.
-function SubAgent({ a, onOpen }: { a: SubAgentInfo; onOpen: (a: SubAgentInfo) => void }) {
+export function SubAgent({ a, onOpen }: { a: SubAgentInfo; onOpen: (a: SubAgentInfo) => void }) {
   return (
     <button className={'subagent ' + a.status} onClick={() => onOpen(a)}>
       <span className="sa-ic">{saIcon(a.name, 15)}</span>
@@ -174,87 +174,3 @@ export function SubAgentModal({ agent, onClose }: { agent: SubAgentInfo | null; 
     </div>
   )
 }
-
-// memoized so composer typing (which re-renders the app) doesn't re-render the
-// panel — only re-renders when its own data (status/todos/files/terminal…) changes
-export const AgentPanel = memo(function AgentPanel({
-  status,
-  elapsed,
-  todos,
-  files,
-  subagents,
-  onOpenFile,
-  onOpenSubagent
-}: {
-  status: AgentStatus
-  elapsed: number
-  todos: Todo[]
-  files: ChangedFile[]
-  subagents: SubAgentInfo[]
-  onOpenFile: (f: ChangedFile) => void
-  onOpenSubagent: (a: SubAgentInfo) => void
-}) {
-  const busy = status === 'analyzing' || status === 'working'
-  const runningSub = subagents.filter((a) => a.status === 'running').length
-  const doneSub = subagents.filter((a) => a.status === 'done').length
-  return (
-    <section className="agent">
-      <div className="ag-head">
-        <span className="t">에이전트</span>
-        <span className="spacer" />
-        <StatusPill status={status} elapsed={elapsed} />
-      </div>
-      <div className="ag-scroll scroll">
-        <div className="ag-sec">
-          <div className="sh">
-            <IconList size={14} style={{ color: 'var(--text-2)' }} />
-            <span className="lbl">할 일</span>
-            <span className="count">
-              {todos.filter((t) => t.status === 'done').length}/{todos.length || 0}
-            </span>
-          </div>
-          {todos.length ? (
-            <Todos todos={todos} />
-          ) : (
-            <div className="ag-none">{busy ? '계획을 수립하는 중…' : '아직 할 일이 없어요'}</div>
-          )}
-        </div>
-
-        <div className="ag-sec">
-          <div className="sh">
-            <IconBot size={14} style={{ color: 'var(--text-2)' }} />
-            <span className="lbl">서브에이전트</span>
-            <span className="count">{runningSub > 0 ? runningSub + ' 실행 중' : doneSub + '/' + (subagents.length || 0)}</span>
-          </div>
-          {subagents.length ? (
-            <div className="subagents scroll">
-              {subagents.map((a) => (
-                <SubAgent key={a.id} a={a} onOpen={onOpenSubagent} />
-              ))}
-            </div>
-          ) : (
-            <div className="ag-none">아직 서브에이전트가 없어요</div>
-          )}
-        </div>
-
-        {/* grow — 변경된 파일은 패널의 남는 세로 공간을 전부 사용 (목록 최소 224px) */}
-        <div className="ag-sec grow" style={{ borderBottom: 'none' }}>
-          <div className="sh">
-            <IconFile size={14} style={{ color: 'var(--text-2)' }} />
-            <span className="lbl">변경된 파일</span>
-            <span className="count">{files.length}</span>
-          </div>
-          {files.length ? (
-            <div className="files scroll">
-              {files.map((f) => (
-                <FileRow key={f.path} f={f} onOpen={onOpenFile} />
-              ))}
-            </div>
-          ) : (
-            <div className="ag-none">아직 변경된 파일이 없어요</div>
-          )}
-        </div>
-      </div>
-    </section>
-  )
-})

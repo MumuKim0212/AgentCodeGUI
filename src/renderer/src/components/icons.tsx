@@ -53,6 +53,13 @@ export const IconChevLeft = (p: IconProps) => (
     <path d="M15 6l-6 6 6 6" />
   </Icon>
 )
+// 사이드 패널(탐색기) 토글 — 좌측 칼럼이 그어진 패널. "패널 보이기/숨기기"의 통념 아이콘
+export const IconPanelLeft = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x={3} y={4} width={18} height={16} rx={2} />
+    <path d="M9 4v16" />
+  </Icon>
+)
 export const IconImage = (p: IconProps) => (
   <Icon {...p}>
     <rect x={3} y={3} width={18} height={18} rx={2.5} />

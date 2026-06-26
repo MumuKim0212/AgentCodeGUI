@@ -1,8 +1,9 @@
 import { memo, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { AppUser, AgentStatus } from '@shared/protocol'
 import { useAppVersion } from '../lib/version'
 import { getPref, setPref } from '../lib/prefs'
-import { IconSearch, IconPlus, IconMore, IconPencil, IconSpark, IconTrash, IconCode, IconGrid, IconSquare, IconMessage, IconChevLeft, IconChevRight } from './icons'
+import { IconSearch, IconPlus, IconMore, IconPencil, IconSpark, IconTrash, IconCode, IconGrid, IconMessage, IconChevLeft, IconPanelLeft } from './icons'
 
 // 채팅 = pure conversation (no folder/explorer) · single = one coding agent · multi = parallel agents
 export type WorkspaceMode = 'chat' | 'single' | 'multi'
@@ -320,14 +321,24 @@ export const Sidebar = memo(function Sidebar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // 접힘 시 "다시 열기" 토글을 타이틀바 좌측 슬롯에 포털한다 — 단축키(`) 몰라도 클릭으로
+  // 열 수 있고, 타이틀바는 모든 모드 공통(한 번만 렌더)이라 채팅·코드·멀티 어디서나 동작.
+  // 슬롯 DOM은 마운트 뒤에 잡는다(첫 커밋 전엔 없으므로).
+  const [tbSlot, setTbSlot] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    setTbSlot(document.getElementById('tb-left-slot'))
+  }, [])
+
+  // 접힘: 잔여 레일 없이 완전히 사라진다 — 칼럼이 깔끔하게 닫힌다.
   if (!open) {
-    return (
-      <div className="sidebar-rail">
-        <button className="exp-rail-btn has-tip" data-tip="사이드바 열기 ( ` )" aria-label="사이드바 열기" onClick={toggle}>
-          <IconChevRight size={14} />
-        </button>
-      </div>
-    )
+    return tbSlot
+      ? createPortal(
+          <button className="tb-sb-toggle has-tip" data-tip="사이드바 열기 ( ` )" aria-label="사이드바 열기" onClick={toggle}>
+            <IconPanelLeft size={16} />
+          </button>,
+          tbSlot
+        )
+      : null
   }
 
   return (
@@ -361,11 +372,11 @@ export const Sidebar = memo(function Sidebar({
             role="tab"
             aria-selected={mode === 'single'}
             className={'sb-mode-btn has-tip' + (mode === 'single' ? ' on' : '')}
-            data-tip="탐색기·도구를 갖춘 코딩 에이전트"
+            data-tip="탐색기·코드 인텔리전스를 갖춘 코드 작업 공간"
             onClick={() => onModeChange('single')}
           >
-            <IconSquare size={14} />
-            <span>에이전트</span>
+            <IconCode size={14} />
+            <span>코드</span>
           </button>
           <button
             role="tab"

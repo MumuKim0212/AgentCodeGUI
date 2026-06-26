@@ -510,20 +510,17 @@ input,textarea{ font-family:inherit; }
   background:var(--accent); color:var(--on-accent); transition:background .12s;
 }
 .exp-blank-btn:hover{ background:var(--accent-2); }
-/* 접힘(탐색기·사이드바 공용): 펼치기 버튼 하나만 남는 좁은 레일 */
-.explorer-rail, .sidebar-rail{
-  width:30px; flex:0 0 30px;
-  display:flex; flex-direction:column; align-items:center;
-  padding-top:10px; background:var(--bg); border-right:1px solid var(--line);
-}
-.exp-rail-btn{ color:var(--text-3); padding:5px; border-radius:7px; display:grid; place-items:center; transition:background .12s,color .12s; }
-.exp-rail-btn:hover{ background:var(--surface-2); color:var(--text); }
-/* 레일(접힘) 버튼 툴팁 — 기본(위 중앙)은 창 왼쪽 모서리에 잘리므로 버튼 오른쪽에 띄운다 */
-.explorer-rail .has-tip::after, .sidebar-rail .has-tip::after{
-  bottom:auto; top:50%; left:100%; margin-bottom:0; margin-left:9px;
-  transform:translate(-3px, -50%);
-}
-.explorer-rail .has-tip:hover::after, .sidebar-rail .has-tip:hover::after{ transform:translate(0, -50%); }
+/* 사이드바를 접으면 레일을 남기지 않고 완전히 사라진다 — 다시 열기 토글은 타이틀바
+   좌측 슬롯(.tb-left)으로 포털된다(Sidebar.tsx). 비어 있으면 :empty로 숨겨 제목 위치
+   에 영향이 없다. */
+.tb-left{ display:flex; align-items:center; }
+.tb-left:empty{ display:none; }
+.tb-sb-toggle{ display:grid; place-items:center; width:30px; height:30px; color:var(--text-3); border-radius:8px; transition:background .12s, color .12s; }
+.tb-sb-toggle:hover{ background:var(--surface-2); color:var(--text); }
+/* 타이틀바 맨 위·맨 왼쪽이라 기본(위 중앙) 툴팁은 창 위/왼쪽 모서리에 잘린다 →
+   버튼 아래로, 그리고 버튼 왼쪽 끝에 맞춰 오른쪽으로 펼친다(가운데 정렬 X) */
+.tb-sb-toggle.has-tip::after{ bottom:auto; top:100%; left:0; margin-bottom:0; margin-top:8px; transform:translate(0, -3px); }
+.tb-sb-toggle.has-tip:hover::after{ transform:translate(0, 0); }
 
 /* ============================== CHAT ============================== */
 .chat{ flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg); position:relative; }
@@ -567,6 +564,12 @@ input,textarea{ font-family:inherit; }
 .chat-head .spacer{ flex:1; }
 .chat-head .h-ic{ color:var(--text-3); padding:7px; border-radius:8px; transition:background .12s,color .12s; }
 .chat-head .h-ic:hover{ background:var(--surface-2); color:var(--text); }
+/* 탐색기 접힘 시 헤더 좌상단에 뜨는 "탐색기 열기" 토글 — 레일 잔여물 없이 다시 여는 버튼 */
+.chat-head-toggle{ display:grid; place-items:center; color:var(--text-3); padding:6px; margin-left:-2px; border-radius:8px; transition:background .12s, color .12s; }
+.chat-head-toggle:hover{ background:var(--surface-2); color:var(--text); }
+/* 헤더 맨 위·왼쪽이라 기본(위 중앙) 툴팁은 잘린다 → 버튼 아래로, 왼쪽 끝 맞춰 오른쪽 펼침 */
+.chat-head-toggle.has-tip::after{ bottom:auto; top:100%; left:0; margin-bottom:0; margin-top:8px; transform:translate(0, -3px); }
+.chat-head-toggle.has-tip:hover::after{ transform:translate(0, 0); }
 
 .chat-scroll{ flex:1; overflow-y:auto; min-height:0; }
 /* 대화 본문 폭은 채팅 칼럼에 비례 — 좁을 땐 예전처럼 760px 기준으로 꽉 채우고,
@@ -575,9 +578,10 @@ input,textarea{ font-family:inherit; }
    px 경계를 줌 배율(--z, Ctrl+휠)로 나누는 건 zoom이 레이아웃까지 키우는 보정 —
    이렇게 해야 확대해도 칼럼의 "보이는 폭"은 그대로 두고 글자만 커지며 재줄바꿈된다 */
 .thread{ max-width:clamp(calc(760px / var(--z, 1)), 88%, calc(1400px / var(--z, 1))); margin:0 auto; padding:26px 28px 30px; display:flex; flex-direction:column; gap:24px; }
-/* 순수 채팅 모드(.chat--talk): 탐색기·에이전트 패널이 없어 칼럼이 끝까지 넓다.
-   본문을 92%·상한 1600px로 키워 양옆 여백을 줄인다 (가용 폭이 좁으면 그대로 따라 줄어듦) */
-.chat--talk .thread{ max-width:clamp(calc(760px / var(--z, 1)), 92%, calc(1600px / var(--z, 1))); }
+/* 순수 채팅(.chat--talk)·코드(.chat--code) 모드: 오른쪽 에이전트 패널이 없어 칼럼이
+   넓다. 본문을 92%·상한 1600px로 키워 양옆 여백을 줄인다 (가용 폭이 좁으면 따라 줄어듦) */
+.chat--talk .thread,
+.chat--code .thread{ max-width:clamp(calc(760px / var(--z, 1)), 92%, calc(1600px / var(--z, 1))); }
 /* native virtualization: the browser skips layout/paint for off-screen messages,
    so very long conversations stay smooth to scroll and cheap to render. The `auto`
    keyword remembers each message's real height after it's first measured. */
@@ -856,7 +860,10 @@ input,textarea{ font-family:inherit; }
 .composer-wrap{ flex:0 0 auto; padding:14px 28px 18px; }
 /* 컴포저(게이지·입력창)는 의도적으로 760px 고정 — 본문(.thread)은 창에 비례해
    넓어지지만, 입력 영역까지 따라 늘면 가로로 휑해져 오히려 산만하다(사용자 피드백) */
-.composer-inner{ max-width:760px; margin:0 auto; }
+/* 오른쪽 에이전트 패널을 들어낸 뒤 — 코드 모드 입력부도 채팅 탭과 같은 880px로
+   넓혀 메시지 칼럼(.thread, 88%/1400)과 어색하지 않게 맞춘다. (talk 모드는 아래
+   .chat--talk 규칙이 따로 잡는다) */
+.composer-inner{ max-width:880px; margin:0 auto; }
 /* 채팅 모드는 입력창만 살짝 넓혀(760→880px) 넓어진 본문과 균형을 맞춘다 */
 .chat--talk .composer-inner{ max-width:880px; }
 .suggest{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:11px; }
@@ -1037,6 +1044,41 @@ input,textarea{ font-family:inherit; }
 .cc-pct{ flex:0 0 auto; font-family:var(--font-mono); font-size:10.5px; color:var(--accent-2); font-weight:600; }
 .cc-detail{ font-size:10px; color:var(--text-4); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
+/* ============================================================
+   WORK BAR — 코드 모드 컴포저 위 한 줄(할 일·서브에이전트·변경된 파일·컨텍스트 칩 +
+   클릭 시 위로 뜨는 팝오버). 예전 오른쪽 .agent 패널을 대체해 대화 칼럼을 넓힌다.
+   ============================================================ */
+.workbar-wrap{ flex:0 0 auto; padding:13px 28px 0; }
+/* 예전 컨텍스트 스트립과 동일하게 4칸이 폭을 똑같이 나눠 가진다(.ctx-strip 결) */
+.workbar{ max-width:880px; margin:0 auto; display:flex; gap:8px; }
+.wb-cell{ flex:1; min-width:0; position:relative; }
+.wb-chip{ width:100%; display:flex; align-items:center; gap:9px; padding:7px 10px; text-align:left;
+  background:var(--surface); border:1px solid var(--line); border-radius:10px; cursor:pointer;
+  transition:background .14s, box-shadow .14s, border-color .14s; }
+.wb-chip:hover{ border-color:var(--accent-line); box-shadow:var(--hover-ring); }
+.wb-chip.on{ border-color:var(--accent-line); box-shadow:var(--hover-ring); background:var(--bg); }
+/* 칩 안 텍스트는 .cc-text/.cc-top/.cc-label/.cc-pct/.cc-detail(컨텍스트 스트립)을 그대로
+   재사용해 동일한 결을 낸다. 왼쪽 슬롯만 칩별 아이콘(할 일·서브·파일) 또는 링(컨텍스트). */
+.wb-ic{ width:19px; height:19px; flex:0 0 19px; display:grid; place-items:center; color:var(--text-3); }
+.wb-chip.on .wb-ic{ color:var(--accent-2); }
+.wb-chip.on .cc-ring::after{ background:var(--bg); }
+
+/* popover — 칩 칸 바로 위로 떠오른다(모델 선택 메뉴와 같은 카드/그림자). 오른쪽 끝
+   칩(컨텍스트)만 오른쪽 정렬해 컬럼 밖으로 새지 않게 한다. */
+.wb-pop{ position:absolute; bottom:calc(100% + 9px); left:0; width:320px; max-width:86vw;
+  max-height:340px; overflow-y:auto; overscroll-behavior:contain;
+  background:var(--surface); border:1px solid var(--line-2); border-radius:13px;
+  box-shadow:0 18px 44px -12px rgba(40,30,20,0.34); padding:8px; z-index:40;
+  animation:rise .15s cubic-bezier(.2,.8,.2,1) both; }
+.wb-pop.r{ left:auto; right:0; }
+.wb-pop-h{ display:flex; align-items:center; gap:8px; padding:5px 8px 9px; }
+.wb-pop-h .t{ font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--text-2); }
+.wb-pop-h .c{ margin-left:auto; font-family:var(--font-mono); font-size:11px; color:var(--text-3); }
+.wb-pop-list{ display:flex; flex-direction:column; gap:3px; }
+.wb-ctx-list{ display:flex; flex-direction:column; gap:6px; }
+/* 팝오버 배경(surface)과 구분되도록 컨텍스트 칩은 bg로, 세로로 쌓이게 flex 해제 */
+.wb-ctx-list .ctx-chip{ flex:0 0 auto; background:var(--bg); }
+
 /* reusable hover tooltip that floats ABOVE the element (composer controls) */
 .has-tip{ position:relative; }
 .has-tip::after{
@@ -1213,14 +1255,9 @@ input,textarea{ font-family:inherit; }
 .q-submit:hover{ background:var(--accent-2); }
 .q-submit:disabled{ opacity:.45; cursor:default; }
 
-/* ============================== AGENT PANEL ============================== */
-.agent{ width:392px; flex:0 0 392px; background:var(--bg); border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
-.ag-head{ height:52px; flex:0 0 52px; display:flex; align-items:center; gap:10px; padding:0 16px 0 20px; border-bottom:1px solid var(--line); }
-.ag-head .t{ font-size:13.5px; font-weight:600; letter-spacing:-.01em; white-space:nowrap; }
-.ag-head .spacer{ flex:1; }
-.ag-head .ic{ color:var(--text-3); padding:7px; border-radius:8px; transition:background .12s,color .12s; }
-.ag-head .ic:hover{ background:var(--surface-2); color:var(--text); }
-
+/* ===================== 상태칩 · 작업 목록 행 (공유) =====================
+   예전 오른쪽 에이전트 패널에서 왔다. 지금은 채팅 헤더의 상태칩과 작업 바 팝오버
+   (할 일/서브에이전트/변경된 파일)가 이 스타일을 공유한다. */
 .status-pill{ display:flex; align-items:center; gap:7px; font-size:12px; font-weight:500; padding:5px 11px 5px 9px; border-radius:99px; border:1px solid var(--line-2); white-space:nowrap; }
 .status-pill .d{ width:7px; height:7px; border-radius:99px; }
 .status-pill.analyzing{ color:var(--blue); background:var(--blue-soft); border-color:transparent; }
@@ -1233,15 +1270,6 @@ input,textarea{ font-family:inherit; }
 .status-pill.error .d{ background:var(--red); }
 .status-pill.idle{ color:var(--text-3); }
 .status-pill.idle .d{ background:var(--text-4); }
-
-/* flex column이라 마지막 섹션(.grow — 변경된 파일)이 패널의 남는 세로 공간을 전부
-   차지할 수 있다; 내용이 패널보다 길어지면 예전처럼 패널 전체가 스크롤 */
-.ag-scroll{ flex:1; overflow-y:auto; min-height:0; display:flex; flex-direction:column; }
-.ag-sec{ flex:0 0 auto; padding:18px 20px; border-bottom:1px solid var(--line); }
-.ag-sec.grow{ flex:1 1 auto; display:flex; flex-direction:column; }
-.ag-sec .sh{ display:flex; align-items:center; gap:8px; margin-bottom:13px; }
-.ag-sec .sh .lbl{ font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--text-2); white-space:nowrap; }
-.ag-sec .sh .count{ margin-left:auto; font-family:var(--font-mono); font-size:11px; color:var(--text-3); }
 
 .task-card{ background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:13px 14px; }
 .task-card .q{ font-size:13px; line-height:1.55; color:var(--text-2); white-space:pre-wrap; }
@@ -2510,9 +2538,7 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 @keyframes rise{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:none; } }
 @keyframes fade{ from{ opacity:0; } to{ opacity:1; } }
 
-@media (max-width:1180px){ .agent{ width:330px; flex-basis:330px; } }
 @media (max-width:1000px){ .sidebar{ width:210px; flex-basis:210px; } }
-@media (max-width:860px){ .agent{ display:none; } }
 @media (max-width:760px){ .lg-brand{ display:none; } }
 
 /* ============================================================
