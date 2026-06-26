@@ -1403,6 +1403,11 @@ input,textarea{ font-family:inherit; }
 }
 .ftbadge.generic{ color:var(--text-4); background:color-mix(in oklab, var(--text-4) 13%, transparent); }
 
+/* Modern file glyph (Material Icon Theme SVG) — replaces the old letter badge. The span
+   is sized by the caller (style width/height); the inlined SVG (viewBox-only) fills it. */
+.fticon{ flex:0 0 auto; display:inline-grid; place-items:center; line-height:0; }
+.fticon svg{ width:100%; height:100%; display:block; }
+
 /* ============================== FILE VIEWER CARD ============================== */
 .fv-overlay{
   position:absolute; inset:0; z-index:60;
