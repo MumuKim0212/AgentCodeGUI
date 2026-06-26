@@ -656,6 +656,19 @@ input,textarea{ font-family:inherit; }
   background:var(--accent); color:var(--on-accent);
   font-family:var(--font-mono); font-weight:700; font-size:12px;
 }
+/* In dark mode the global --accent drops its coral hue (neutral light gray), so
+   Claude's chat avatar reads as white. Restore the light-mode brand orange just for
+   the Claude marks in the chat (message avatar, tool-led avatar, welcome mark). */
+:root[data-theme="dark"] .msg .ava.ai,
+:root[data-theme="dark"] .toollog.lead .lead-ava{
+  background: oklch(0.61 0.16 42);
+  color: oklch(0.99 0.01 80);
+}
+:root[data-theme="dark"] .wc-mark{
+  background: linear-gradient(140deg, oklch(0.61 0.16 42), oklch(0.55 0.17 38));
+  color: oklch(0.99 0.01 80);
+  box-shadow: 0 14px 34px -12px oklch(0.61 0.16 42 / 0.34);
+}
 /* the "Claude" + time header on a tool-led turn — mirrors .msg .meta so a turn that
    opens with a tool still reads as Claude's, like a normal message block */
 .toollog.lead .lead-meta{ display:flex; align-items:center; gap:8px; margin-bottom:-2px; }
