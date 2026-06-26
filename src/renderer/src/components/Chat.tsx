@@ -6,7 +6,8 @@ import type {
   UsageInfo,
   ToolLogItem,
   AgentQuestion,
-  SkillInfo
+  SkillInfo,
+  PlanGoal
 } from '@shared/protocol'
 import type { ThreadItem } from '../store/session'
 import { Markdown } from './Markdown'
@@ -43,6 +44,7 @@ import {
   IconFolder,
   IconChevRight,
   IconClock,
+  IconPlay,
   type IconProps
 } from './icons'
 
@@ -140,7 +142,8 @@ export const SLASH_COMMANDS: SlashCmd[] = [
   { name: 'compact', desc: '대화를 요약해 컨텍스트 절약', icon: IconCompress },
   { name: 'review', desc: '변경 사항 코드 리뷰', icon: IconEye },
   { name: 'security-review', desc: '변경 사항의 보안 취약점 검토', icon: IconShieldChk },
-  { name: 'plan', desc: '목표·서브태스크를 Planner에 기록', icon: IconClipList }
+  { name: 'plan', desc: '목표·서브태스크를 Planner에 기록', icon: IconClipList },
+  { name: 'run', desc: '미완료 계획을 자동으로 이어서 구현', icon: IconPlay }
 ]
 
 // ── Typewriter (used for animated assistant messages) ─────────
@@ -1465,6 +1468,64 @@ export function Composer({
   // the leading "/token" being typed (no space/newline yet, not mid-run), else null
   const slashQuery = !busy && value.startsWith('/') && !/\s/.test(value) ? value.slice(1).toLowerCase() : null
 
+  // ── "/run" 2-stage plan picker ─────────────────────────────
+  // After "/run " (note the space — so the 1-stage `slashQuery` above is already null),
+  // the same dropdown switches to a list of unfinished plans. Stays open from "/run "
+  // until a goalId is locked in (i.e. "/run <id> " with a trailing space). Filter text is
+  // whatever sits between "/run " and that point.
+  const runQuery =
+    !busy && /^\/run(\s|$)/.test(value) && !/^\/run\s+\S+\s/.test(value)
+      ? value.replace(/^\/run\s*/, '').toLowerCase()
+      : null
+  const [plans, setPlans] = useState<PlanGoal[]>([])
+  const [runIdx, setRunIdx] = useState(0)
+  const [runDismissed, setRunDismissed] = useState(false)
+  const runRef = useRef<HTMLDivElement>(null)
+  const plansCwd = useRef<string | null>(null)
+
+  // lazily load this project's unfinished plans the first time the picker is summoned
+  useEffect(() => {
+    if (runQuery === null || plansCwd.current === cwd) return
+    plansCwd.current = cwd
+    window.api.plan
+      .list(cwd)
+      // unfinished = active goal with at least one open subtask (mirrors JournalModal)
+      .then((gs) => setPlans(gs.filter((g) => g.status === 'active' && g.subtasks.some((s) => !s.done))))
+      .catch(() => setPlans([]))
+  }, [runQuery, cwd])
+
+  // every change to the query restarts the highlight; clearing "/run" un-dismisses
+  useEffect(() => {
+    setRunIdx(0)
+    if (runQuery === null) setRunDismissed(false)
+  }, [runQuery])
+
+  // match goal title or id (substring), like the "/" palette matches command names
+  const runHits =
+    runQuery === null ? [] : plans.filter((g) => g.title.toLowerCase().includes(runQuery) || g.id.toLowerCase().includes(runQuery))
+  const runOpen = runQuery !== null && !runDismissed && runHits.length > 0
+  const activeRunIdx = Math.min(runIdx, runHits.length - 1)
+
+  useEffect(() => {
+    if (!runOpen) return
+    runRef.current?.querySelector(`[data-i="${activeRunIdx}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [activeRunIdx, runOpen])
+
+  // picking a plan locks in its goalId (not the title — the parser & findGoalFile match
+  // on id, and a trailing space closes this picker). The menu shows the title, so the raw
+  // id in the box is fine.
+  const pickRun = (g: PlanGoal): void => {
+    onChange('/run ' + g.id + ' ')
+    requestAnimationFrame(() => {
+      const el = inputRef?.current
+      if (!el) return
+      el.focus()
+      const n = el.value.length
+      el.setSelectionRange(n, n)
+      grow(el)
+    })
+  }
+
   // lazily load this project's skills the first time the palette is summoned
   useEffect(() => {
     if (slashQuery === null || skillsCwd.current === cwd) return
@@ -1527,8 +1588,9 @@ export function Composer({
   const baseIsMain = !mentionBase || basePosix.toLowerCase() === cwdPosix.toLowerCase()
   const baseName = basePosix.slice(basePosix.lastIndexOf('/') + 1)
 
-  // the mention token under the caret — suppressed while busy or when "/" owns the menu
-  const mentionTok = !busy && slashQuery === null ? mentionAtCaret(value, caret) : null
+  // the mention token under the caret — suppressed while busy, or when the "/" or "/run"
+  // menus own the dropdown
+  const mentionTok = !busy && slashQuery === null && runQuery === null ? mentionAtCaret(value, caret) : null
   const mentionActive = mentionTok !== null
 
   // lazily load the base folder's file list when a mention is summoned, and re-load
@@ -1615,6 +1677,28 @@ export function Composer({
       if (e.key === 'Escape') {
         e.preventDefault()
         setMentionDismissed(true)
+        return
+      }
+    }
+    if (runOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setRunIdx((i) => (Math.min(i, runHits.length - 1) + 1) % runHits.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setRunIdx((i) => (Math.min(i, runHits.length - 1) - 1 + runHits.length) % runHits.length)
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        pickRun(runHits[activeRunIdx])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setRunDismissed(true)
         return
       }
     }
@@ -1868,6 +1952,37 @@ export function Composer({
                   )}
                 </button>
               ))}
+            </div>
+          )}
+          {runOpen && (
+            <div className="slash-menu scroll" ref={runRef} role="listbox">
+              <div className="slash-sec">미완료 계획</div>
+              {runHits.map((g, i) => {
+                const total = g.subtasks.length
+                const open = g.subtasks.filter((s) => !s.done).length
+                return (
+                  <button
+                    key={'run:' + g.id}
+                    data-i={i}
+                    role="option"
+                    aria-selected={i === activeRunIdx}
+                    className={'slash-opt' + (i === activeRunIdx ? ' on' : '')}
+                    onMouseEnter={() => setRunIdx(i)}
+                    onMouseDown={(ev) => {
+                      ev.preventDefault() // keep focus in the textarea
+                      pickRun(g)
+                    }}
+                  >
+                    <span className="slash-ic">
+                      <IconPlay size={15} />
+                    </span>
+                    <span className="slash-name">{g.title}</span>
+                    <span className="slash-desc">
+                      미완 {open}/{total}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           )}
           {images.length > 0 && (

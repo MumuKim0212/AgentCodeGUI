@@ -155,6 +155,11 @@ export const IconBolt = (p: IconProps) => (
     <path d="M13 2L4.5 13.5H11l-1 8.5L18.5 10.5H12z" />
   </Icon>
 )
+export const IconPlay = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M7 5l11 7-11 7z" />
+  </Icon>
+)
 export const IconBot = (p: IconProps) => (
   <Icon {...p}>
     <path d="M12 8V4H8" />

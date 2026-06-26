@@ -340,6 +340,7 @@ function writeSessionGoal(s: PSession, todos: Todo[]): void {
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, `${s.goalId}.md`)
 
+  const allDone = todos.length > 0 && todos.every((t) => t.status === 'done')
   const lines = todos
     .map((t, i) => `- [${t.status === 'done' ? 'x' : ' '}] (st-${i + 1}) ${oneLine(t.label)}`)
     .join('\n')
@@ -349,6 +350,11 @@ function writeSessionGoal(s: PSession, todos: Todo[]): void {
     let md = fs.readFileSync(file, 'utf8')
     const re = /(##[^\n]*서브태스크[^\n]*\n)[\s\S]*?(?=\n##\s|$)/
     md = re.test(md) ? md.replace(re, `$1${lines}\n`) : md.replace(/\s*$/, '') + `\n\n${section}`
+    // 모든 서브태스크가 완료됐고 사용자가 dropped로 보류시키지 않았으면 active→done 자동 전환.
+    const statusM = md.match(/^status:\s*(.*)$/m)
+    if (allDone && statusM && statusM[1].trim() === 'active') {
+      md = md.replace(/^(status:\s*).*$/m, '$1done')
+    }
     atomicWriteFileSync(file, md)
     return
   }
@@ -358,7 +364,7 @@ function writeSessionGoal(s: PSession, todos: Todo[]): void {
     `---\n` +
     `id: ${s.goalId}\n` +
     `title: ${yamlStr(title.length > 70 ? title.slice(0, 69) + '…' : title)}\n` +
-    `status: active\n` +
+    `status: ${allDone ? 'done' : 'active'}\n` +
     `session_id: ${yamlStr(s.sessionId)}\n` +
     `created: ${s.created}\n` +
     `---\n${section}`

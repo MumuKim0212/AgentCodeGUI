@@ -993,6 +993,29 @@ input,textarea{ font-family:inherit; }
 }
 .sched-x:hover{ background:var(--surface-2); color:var(--red); }
 
+/* "/run" Supervisor loop progress bar — sits above the composer while a loop is live */
+.run-loop-bar{
+  display:flex; align-items:center; gap:9px; margin:0 0 8px; padding:7px 9px 7px 10px;
+  border-radius:9px; background:var(--surface); border:1px solid var(--line-2);
+  font-size:12.5px;
+}
+.run-loop-bar.running{ border-color:var(--accent-line); background:var(--accent-soft); }
+.run-loop-bar.error{ border-color:var(--red); }
+.run-loop-ic{ flex:0 0 auto; display:grid; place-items:center; color:var(--accent-2); width:18px; height:18px; }
+.run-loop-bar.error .run-loop-ic{ color:var(--red); }
+.run-loop-spin{
+  width:12px; height:12px; border-radius:50%; border:2px solid var(--accent-line);
+  border-top-color:var(--accent); animation:run-loop-spin .7s linear infinite;
+}
+@keyframes run-loop-spin{ to{ transform:rotate(360deg); } }
+.run-loop-title{ font-weight:650; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.run-loop-meta{ flex:1; min-width:0; color:var(--text-4); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.run-loop-x{
+  flex:0 0 auto; display:grid; place-items:center; width:24px; height:24px; border-radius:7px;
+  color:var(--text-4); transition:background .14s, color .14s;
+}
+.run-loop-x:hover{ background:var(--surface-2); color:var(--red); }
+
 /* while busy the composer becomes the "schedule next message" surface — accent ring */
 .composer.scheduling{ border-color:var(--accent-line); box-shadow:0 0 0 3px var(--accent-soft); }
 

@@ -189,6 +189,9 @@ export class ClaudeEngine {
   private taskSeq = 0
   /** session the taskMap belongs to — a new session resets the accumulated tasks */
   private taskSessionId: string | null = null
+  /** which task-tool family last wrote taskMap; switching families mid-session clears it
+   *  so a TodoWrite snapshot and Task* increments never blend into one mixed-up list */
+  private taskFamily: 'todo' | 'task' | null = null
 
   constructor(emit: Emit) {
     this.emit = emit
@@ -392,6 +395,7 @@ export class ClaudeEngine {
             this.taskSessionId = msg.session_id
             this.taskSeq = 0
             this.taskMap.clear()
+            this.taskFamily = null
           }
           this.emit({
             type: 'session',
@@ -599,18 +603,22 @@ export class ClaudeEngine {
       return
     }
 
-    // TodoWrite drives the todo panel, not the tool log.
+    // TodoWrite drives the todo panel, not the tool log. It sends the whole list each
+    // call, so it fully replaces `taskMap` (prefixed ids keep it from colliding with
+    // Task* ids if a session switches tools mid-stream — see TASK_TOOLS comment above).
     if (name === 'TodoWrite') {
       const todos = Array.isArray(input.todos) ? (input.todos as Array<Record<string, unknown>>) : []
-      this.emit({
-        type: 'todos',
-        runId,
-        todos: todos.map((t, i) => ({
-          id: String(i + 1),
+      this.taskFamily = 'todo'
+      this.taskMap.clear()
+      todos.forEach((t, i) => {
+        const tid = `tw-${i + 1}`
+        this.taskMap.set(tid, {
+          id: tid,
           label: String(t.content ?? t.activeForm ?? ''),
           status: todoStatus(String(t.status ?? 'pending'))
-        }))
+        })
       })
+      this.emit({ type: 'todos', runId, todos: [...this.taskMap.values()].map((t) => ({ ...t })) })
       return
     }
 
@@ -619,6 +627,11 @@ export class ClaudeEngine {
     // we mint ids in creation order, which matches the SDK's own per-session numbering
     // that later TaskUpdate calls reference.
     if (name === 'TaskCreate' || name === 'TaskUpdate' || name === 'TaskList') {
+      if (this.taskFamily === 'todo') {
+        this.taskMap.clear()
+        this.taskSeq = 0
+      }
+      this.taskFamily = 'task'
       if (name === 'TaskCreate') {
         const subject = String(input.subject ?? input.description ?? '').trim()
         if (subject) {

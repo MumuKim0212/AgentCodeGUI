@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AppUser, FileDiff, RunRequest, SubAgentInfo, UsageInfo, UserProfile } from '@shared/protocol'
+import type { AppUser, FileDiff, PlanSubtask, RunRequest, SubAgentInfo, Todo, UsageInfo, UserProfile } from '@shared/protocol'
 import { extractMentions } from './lib/mentions'
 import { useMaximized } from './lib/useMaximized'
-import { useAgentSession, initialSessionState, snapshotForPersist, sameCwd, commandOf, commandTitleOf, buildPlanPrompt, type SessionState } from './store/session'
+import { useAgentSession, initialSessionState, snapshotForPersist, sameCwd, commandOf, commandTitleOf, buildPlanPrompt, buildRunPrompt, type SessionState } from './store/session'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar, type WorkspaceMode } from './components/Sidebar'
 import { MultiWorkspace } from './components/MultiAgent'
@@ -27,7 +27,7 @@ import { PromptModal } from './components/PromptModal'
 import { RecentFiles } from './components/RecentFiles'
 import { ResizeHandles } from './components/ResizeHandles'
 import { useZoom, ZoomBadge, mergeRefs } from './components/zoom'
-import { IconCode } from './components/icons'
+import { IconCode, IconPlay, IconX2 } from './components/icons'
 
 // px from the bottom within which the chat counts as "at the bottom" — scrolling
 // back into this band (when not mid scroll-up) resumes auto-follow
@@ -94,6 +94,32 @@ function newChatMeta(manualCwd = '', picker: PickerState = DEFAULT_PICKER): Chat
   }
 }
 
+// "/run" 자동 진행 루프의 상태. iter = 시작(1)부터 센 턴 번호, max = 안전 상한.
+// status: running(진행) · done(전부 완료) · stopped(상한/사용자 정지) · error(턴 실패)
+// subtasks: 마지막으로 읽은 plan 스냅샷 — 오른쪽 "할 일" 패널을 이걸로 채운다.
+type RunLoop = {
+  goalId: string
+  title: string
+  iter: number
+  max: number
+  status: 'running' | 'done' | 'stopped' | 'error'
+  subtasks: PlanSubtask[]
+}
+const RUN_LOOP_MAX = 500
+
+// /run 루프 중에는 에이전트가 TodoWrite를 쓰지 않으므로(plan 파일을 직접 편집), plan
+// 서브태스크 스냅샷을 todo 패널 형식으로 변환해 보여준다. 루프가 도는 동안 다음 미완
+// 서브태스크 하나는 running으로 표시해 스피너가 돌게 한다.
+function runLoopTodos(loop: RunLoop): Todo[] {
+  const subs = loop.subtasks ?? []
+  const nextOpen = loop.status === 'running' ? subs.find((s) => !s.done) : undefined
+  return subs.map((s) => ({
+    id: s.id,
+    label: s.label,
+    status: s.done ? 'done' : s === nextOpen ? 'running' : 'pending'
+  }))
+}
+
 // ── chat persistence (~/.agentcodegui/chats.json) ───────────────────────────
 const CHATS_VERSION = 1
 interface PersistedChats {
@@ -103,7 +129,7 @@ interface PersistedChats {
 }
 
 function MainApp({ user }: { user: AppUser }) {
-  const { state, elapsed, busy, begin, clearPermission, clearQuestion, load } = useAgentSession()
+  const { state, elapsed, busy, lastRunErrored, begin, clearPermission, clearQuestion, load } = useAgentSession()
   const maximized = useMaximized()
   const [input, setInput] = useState('')
   // 이번 대화에서 내가 보낸 메시지(오래된→최신) — 작성칸에서 ↑/↓로 셸처럼 다시 불러온다
@@ -122,6 +148,11 @@ function MainApp({ user }: { user: AppUser }) {
   // the run ends (you can only enqueue while busy, and you can't switch chats while busy,
   // so this single list always belongs to the active chat)
   const [queue, setQueue] = useState<ScheduledMsg[]>([])
+  // "/run" Supervisor loop: after each turn ends, re-read the target plan and either inject
+  // the next subtask's prompt or stop (all done / max iters / error). single-mode only.
+  const [runLoop, setRunLoop] = useState<RunLoop | null>(null)
+  const runLoopRef = useRef(runLoop)
+  runLoopRef.current = runLoop
   // the image lightbox/multi-viewer: the set being viewed + the active index (null = closed)
   const [viewer, setViewer] = useState<{ images: string[]; index: number } | null>(null)
   const [usage, setUsage] = useState<UsageInfo>({ fiveHour: null, weekly: null })
@@ -547,6 +578,7 @@ function MainApp({ user }: { user: AppUser }) {
   // list and the engine's context stay in sync). Keeps the project folder.
   const clearConversation = (): void => {
     if (busy) return
+    setRunLoop(null) // 대화를 비우면 진행 중인 자동 루프도 함께 정리
     load(initialSessionState)
     setInput('')
     setImages([])
@@ -581,6 +613,24 @@ function MainApp({ user }: { user: AppUser }) {
       setAskOpen(true)
       setAskMinimized(false)
       setInput('')
+      return
+    }
+    // "/run <goalId>" starts the Supervisor loop: kick off the first turn here, then the
+    // loop-drain effect re-injects the next turn after each one ends. The operating prompt
+    // we send does NOT start with "/run", so this branch never recurses into itself.
+    if (trimmed.startsWith('/run ')) {
+      const goalId = trimmed.slice(5).trim().split(/\s+/)[0]
+      if (!goalId) return
+      const goals = await window.api.plan.list(cwd).catch(() => [])
+      const goal = goals.find((g) => g.id === goalId)
+      if (!goal || !goal.subtasks.some((s) => !s.done)) {
+        // nothing to run (goal missing or already complete) — leave the text in the box so
+        // the user sees why nothing happened, rather than silently swallowing it
+        return
+      }
+      setRunLoop({ goalId, title: goal.title, iter: 1, max: RUN_LOOP_MAX, status: 'running', subtasks: goal.subtasks })
+      setInput('')
+      void runPrompt(buildRunPrompt(goal), { keepDraft: true })
       return
     }
     // a built-in slash command (/init·/compact·/review·/security-review) → tracked so
@@ -673,6 +723,40 @@ function MainApp({ user }: { user: AppUser }) {
     // 예약 메시지는 자체 텍스트/첨부로 재생 — 실행 중에 새로 쓰던 초안은 건드리지 않는다
     void runPrompt(next.text, { images: next.images, picker: next.picker, keepDraft: true })
   }, [busy, queue])
+
+  // "/run" Supervisor loop drain — same busy→idle `was` guard as the queue, but a separate
+  // effect with its own prev-ref so the two never interfere. On each turn end: stop on error
+  // (no auto-retry), max iters, or all-subtasks-done; otherwise re-read the plan and inject
+  // the next subtask's prompt. Re-reading the file is the source of truth for "are we done".
+  const prevBusyLoopRef = useRef(busy)
+  useEffect(() => {
+    const was = prevBusyLoopRef.current
+    prevBusyLoopRef.current = busy
+    const loop = runLoopRef.current
+    if (busy || !was || !loop || loop.status !== 'running') return
+    if (lastRunErrored) {
+      setRunLoop({ ...loop, status: 'error' })
+      return
+    }
+    if (loop.iter >= loop.max) {
+      setRunLoop({ ...loop, status: 'stopped' })
+      return
+    }
+    window.api.plan
+      .list(cwd)
+      .then((goals) => {
+        const g = goals.find((x) => x.id === loop.goalId)
+        if (!g || g.subtasks.every((s) => s.done)) {
+          // done이어도 패널이 최종 [x] 상태를 보이도록 스냅샷은 갱신
+          setRunLoop({ ...loop, status: 'done', subtasks: g ? g.subtasks : loop.subtasks })
+          return
+        }
+        setRunLoop({ ...loop, iter: loop.iter + 1, subtasks: g.subtasks })
+        void runPrompt(buildRunPrompt(g), { keepDraft: true })
+      })
+      .catch(() => setRunLoop({ ...loop, status: 'error' }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy])
 
   // "더 자세히" from the chat selection toolbar: wrap the highlighted passage in a
   // <selection> tag — an XML tag the model parses more reliably than a markdown
@@ -1028,15 +1112,49 @@ function MainApp({ user }: { user: AppUser }) {
             )}
           </div>
           <SelectionToolbar scrollRef={scrollRef} onElaborate={onElaborateSelection} />
+          {runLoop && (
+            <div className={'run-loop-bar ' + runLoop.status}>
+              <span className="run-loop-ic">
+                {runLoop.status === 'running' ? <span className="run-loop-spin" /> : <IconPlay size={13} />}
+              </span>
+              <span className="run-loop-title">{runLoop.title}</span>
+              <span className="run-loop-meta">
+                {runLoop.status === 'running'
+                  ? `자동 진행 · ${runLoop.iter}/${runLoop.max}`
+                  : runLoop.status === 'done'
+                    ? '모든 서브태스크 완료'
+                    : runLoop.status === 'error'
+                      ? `중단됨 (오류) · ${runLoop.iter}/${runLoop.max}`
+                      : `정지됨 · ${runLoop.iter}/${runLoop.max}`}
+              </span>
+              <button
+                className="run-loop-x"
+                onClick={() => {
+                  // 진행 중이면 현재 턴을 멈추고, 끝난 배지는 닫기만 한다
+                  if (runLoop.status === 'running') {
+                    window.api.cancel()
+                    setRunLoop({ ...runLoop, status: 'stopped' })
+                  } else {
+                    setRunLoop(null)
+                  }
+                }}
+                aria-label={runLoop.status === 'running' ? '자동 진행 정지' : '닫기'}
+                title={runLoop.status === 'running' ? '자동 진행 정지' : '닫기'}
+              >
+                <IconX2 size={13} />
+              </button>
+            </div>
+          )}
           <Composer
             value={input}
             onChange={setInput}
             history={sentHistory}
             onSend={() => runPrompt(input)}
             onStop={() => {
-              // stopping the run also abandons anything queued behind it
+              // stopping the run also abandons anything queued behind it and halts the loop
               window.api.cancel()
               setQueue([])
+              setRunLoop((l) => (l && l.status === 'running' ? { ...l, status: 'stopped' } : l))
             }}
             onSchedule={scheduleMessage}
             queued={queue}
@@ -1062,7 +1180,7 @@ function MainApp({ user }: { user: AppUser }) {
         <AgentPanel
           status={state.status}
           elapsed={elapsed}
-          todos={state.todos}
+          todos={runLoop ? runLoopTodos(runLoop) : state.todos}
           files={state.files}
           subagents={state.subagents}
           onOpenFile={onOpenFile}

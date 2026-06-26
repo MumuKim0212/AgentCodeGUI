@@ -1,6 +1,7 @@
 @echo off
 cd /d "%~dp0"
 title AgentCodeGUI - BUILD INSTALLER
+set CSC_IDENTITY_AUTO_DISCOVERY=false
 echo.
 echo   Building the one-click installer (NSIS).
 echo   This produces dist\AgentCodeGUI-Setup-^<version^>.exe

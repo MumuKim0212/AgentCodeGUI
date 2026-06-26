@@ -5,6 +5,7 @@ import type {
   ChangedFile,
   EngineEvent,
   FileDiff,
+  PlanGoal,
   SubAgentInfo,
   TermLine,
   Todo,
@@ -145,6 +146,30 @@ Behavior guide:
 export function buildPlanPrompt(text: string): string {
   const userPart = text.trim().slice(5).trim()
   return `${PLAN_GUIDE}\n\n## User request\n${userPart || "Organize the work done so far into the Planner."}`
+}
+
+/** "/run" 자동 진행 루프의 한 턴 프롬프트 — 지정한 목표(goal)에서 다음 미완 서브태스크
+ *  하나만 구현하게 한다. 정지 판단은 앱이 plan 파일을 재조회해서 하므로(App.tsx의 루프
+ *  드레인), 프롬프트엔 TASK_COMPLETE 같은 마커가 필요 없다 — "한 턴 = 한 서브태스크"만 담당. */
+export function buildRunPrompt(goal: PlanGoal): string {
+  const next = goal.subtasks.find((s) => s.done === false)
+  const nextLine = next ? `${next.id}: ${next.label}` : '(없음 — 모든 서브태스크가 완료됨)'
+  const done = goal.subtasks.filter((s) => s.done).length
+  return [
+    `You are progressing a plan from this project's Planner (.journal/plan/${goal.id}.md).`,
+    `Goal: ${goal.title}`,
+    `Progress: ${done}/${goal.subtasks.length} subtasks done.`,
+    `Next uncompleted subtask → ${nextLine}`,
+    ``,
+    `Rules for this turn:`,
+    `1. Implement ONLY this single next subtask — nothing beyond it.`,
+    `2. When it's done, open .journal/plan/${goal.id}.md and change that subtask's`,
+    `   "- [ ] (${next?.id ?? 'st-N'}) ..." line to "- [x] (${next?.id ?? 'st-N'}) ...".`,
+    `   Never change an existing (st-N) id, and don't touch other lines.`,
+    `3. If you get stuck or the subtask can't be completed, STOP and explain — do NOT`,
+    `   check it off. Do not invent new subtasks.`,
+    `Always use an absolute path rooted at the project root (cwd).`
+  ].join('\n')
 }
 /** "/compact …" → "compact" when it's a card command, else null (normal prompt / skill). */
 export function commandOf(text: string): string | null {
@@ -538,13 +563,23 @@ export function useAgentSession(
 ) {
   const [state, dispatch] = useReducer(reducer, initialSessionState)
   const [elapsed, setElapsed] = useState(0)
+  // whether the most recent finished run ended in error — the /run loop reads this to
+  // stop (no auto-retry) instead of injecting the next turn. Tracked here rather than in
+  // the reducer since it's loop control, not conversation state.
+  const [lastRunErrored, setLastRunErrored] = useState(false)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const startRef = useRef(0)
 
   // subscribe to streaming engine events (main channel by default, or the one passed in)
   useEffect(() => {
     const sub = subscribe ?? window.api.onEngineEvent
-    return sub((event) => dispatch({ type: 'engine', event }))
+    return sub((event) => {
+      // a new turn starts → clear the stale error flag; a finished turn records its outcome
+      if (event.type === 'session') setLastRunErrored(false)
+      else if (event.type === 'result') setLastRunErrored(!!event.isError)
+      else if (event.type === 'error') setLastRunErrored(true)
+      dispatch({ type: 'engine', event })
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -576,5 +611,5 @@ export function useAgentSession(
   // replace the entire live state — used when switching between chats
   const load = (snapshot: SessionState): void => dispatch({ type: 'load', state: snapshot })
 
-  return { state, elapsed, busy, begin, clearPermission, clearQuestion, load }
+  return { state, elapsed, busy, lastRunErrored, begin, clearPermission, clearQuestion, load }
 }
