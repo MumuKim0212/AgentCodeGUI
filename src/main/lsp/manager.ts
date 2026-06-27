@@ -594,6 +594,130 @@ class LspManager {
     return { state: 'idle', percent: null }
   }
 
+  /**
+   * The Verse API digest folders to surface in the explorer — mirrors UEFN's VS Code view.
+   * Returns the grouped folders ({ path, name }: name like `/Verse.org` over an absolute path).
+   *
+   * Source of truth, in order: (1) the `*.code-workspace` UEFN writes in the project root —
+   * it lists exactly these folders, with the real (often global %LOCALAPPDATA%) digest paths;
+   * (2) falling back to reconstructing from a local `.vproject`. The cwd itself is dropped
+   * (already the main root) and non-existent dirs are skipped. Empty when neither exists, so
+   * non-Verse folders show nothing extra.
+   */
+  verseDigestFolders(cwd: string): { path: string; name: string }[] {
+    if (!cwd) return []
+    const folders = this.codeWorkspaceFolders(cwd) ?? this.vprojectFolders(cwd)
+    if (!folders) return []
+    const self = path.resolve(cwd).toLowerCase()
+    const out: { path: string; name: string }[] = []
+    for (const f of folders) {
+      let abs: string
+      try {
+        abs = path.resolve(cwd, f.path)
+        if (abs.toLowerCase() === self) continue // already the main root
+        if (!fs.existsSync(abs)) continue
+      } catch {
+        continue
+      }
+      out.push({ path: abs, name: f.name })
+    }
+    return out
+  }
+
+  // Parse the UEFN-generated `*.code-workspace` in the project root → its folder list. This is
+  // the same file VS Code opens, so paths/names match UEFN exactly (incl. the global digest
+  // dirs). Relative folder paths resolve against the workspace dir. null = no such file.
+  private codeWorkspaceFolders(cwd: string): { path: string; name: string }[] | null {
+    let files: string[]
+    try {
+      files = fs.readdirSync(cwd).filter((n) => n.toLowerCase().endsWith('.code-workspace'))
+    } catch {
+      return null
+    }
+    for (const n of files) {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(cwd, n), 'utf8')) as {
+          folders?: { name?: string; path?: string }[]
+        }
+        const folders = (j.folders ?? [])
+          .filter((f): f is { name?: string; path: string } => !!f.path)
+          .map((f) => ({ path: f.path, name: f.name || path.basename(f.path) }))
+        if (folders.length) return folders
+      } catch {
+        // malformed workspace file — try the next one
+      }
+    }
+    return null
+  }
+
+  /**
+   * files.exclude globs for the explorer's "Verse 위주로 보기" filter. Mirrors what UEFN's own
+   * VS Code workspace hides (*.uasset/*.umap/__ExternalActors__/Collections/…), so the tree
+   * reads like UEFN's Verse Explorer. Starts from a sensible UEFN default set, then unions the
+   * project's own `.code-workspace` files.exclude. Returns [] when this isn't a Verse project
+   * (no .code-workspace and no .vproject) — the filter toggle then never appears.
+   */
+  verseFileExcludes(cwd: string): string[] {
+    if (!cwd) return []
+    if (!this.codeWorkspaceFolders(cwd) && !verseWorkspaceFolders(cwd)) return []
+    const set = new Set<string>([
+      '**/*.uasset',
+      '**/*.umap',
+      '**/*.png',
+      '**/*.jpg',
+      '**/*.tga',
+      '**/*.vproject',
+      '_INT',
+      '__ExternalActors__',
+      '__ExternalObjects__',
+      'Collections',
+      'Developers'
+    ])
+    for (const k of this.codeWorkspaceExcludes(cwd)) set.add(k)
+    return [...set]
+  }
+
+  // The true-valued keys of `settings["files.exclude"]` in the project root's *.code-workspace.
+  private codeWorkspaceExcludes(cwd: string): string[] {
+    let files: string[]
+    try {
+      files = fs.readdirSync(cwd).filter((n) => n.toLowerCase().endsWith('.code-workspace'))
+    } catch {
+      return []
+    }
+    for (const n of files) {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(cwd, n), 'utf8')) as {
+          settings?: { 'files.exclude'?: Record<string, boolean> }
+        }
+        const ex = j.settings?.['files.exclude']
+        if (ex) {
+          return Object.entries(ex)
+            .filter(([, v]) => v)
+            .map(([k]) => k)
+        }
+      } catch {
+        // malformed workspace file — try the next one
+      }
+    }
+    return []
+  }
+
+  // Fallback: reconstruct the folder list from a `.vproject` (when no .code-workspace exists).
+  private vprojectFolders(cwd: string): { path: string; name: string }[] | null {
+    const folders = verseWorkspaceFolders(cwd)
+    if (!folders) return null
+    const out: { path: string; name: string }[] = []
+    for (const f of folders) {
+      try {
+        out.push({ path: fileURLToPath(f.uri), name: f.name })
+      } catch {
+        // skip unparsable uri
+      }
+    }
+    return out.length ? out : null
+  }
+
   // clangd 서버(키=cwd)당 한 번만 — generate가 끝나 'generated'면 그 서버를 재시작.
   // DB는 .uproject 조상(ueRoot)에 대해 만들지만, 재시작 대상은 cwd로 띄운 서버다
   // (하위폴더를 열면 ueRoot≠cwd이므로 둘을 구분해야 한다).

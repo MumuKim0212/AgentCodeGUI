@@ -1100,11 +1100,11 @@ export const WorkBar = memo(function WorkBar({
   const totalAdd = files.reduce((n, f) => n + (f.add || 0), 0)
   const totalDel = files.reduce((n, f) => n + (f.del || 0), 0)
 
-  const chips: { key: WorkTab; ring?: number; icon?: ReactNode; label: string; value: string; detail: string; align?: 'r' }[] = [
-    { key: 'todo', icon: <IconList size={14} />, label: '할 일', value: `${todoDone}/${todoTotal || 0}`, detail: todoTotal ? `${todoPct}% 완료` : busy ? '계획 수립 중' : '없음' },
-    { key: 'sub', icon: <IconBot size={14} />, label: '서브에이전트', value: `${doneSub}/${subTotal || 0}`, detail: runningSub > 0 ? `${runningSub}개 실행 중` : subTotal ? '모두 완료' : '없음' },
-    { key: 'file', icon: <IconFile size={14} />, label: '변경된 파일', value: `${files.length}`, detail: files.length ? `+${totalAdd} −${totalDel}` : '없음' },
-    { key: 'ctx', ring: ctxPct, label: '컨텍스트', value: `${ctxPct}%`, detail: ctxItems[0].detail, align: 'r' }
+  const chips: { key: WorkTab; ring?: number; icon?: ReactNode; label: string; value: string; detail: string; tip: string; align?: 'r' }[] = [
+    { key: 'todo', icon: <IconList size={14} />, label: '할 일', value: `${todoDone}/${todoTotal || 0}`, detail: todoTotal ? `${todoPct}% 완료` : busy ? '계획 수립 중' : '없음', tip: 'Claude가 세운 작업 계획 — 누르면 할 일 목록' },
+    { key: 'sub', icon: <IconBot size={14} />, label: '서브에이전트', value: `${doneSub}/${subTotal || 0}`, detail: runningSub > 0 ? `${runningSub}개 실행 중` : subTotal ? '모두 완료' : '없음', tip: 'Claude가 띄운 보조 에이전트의 진행 상황 — 누르면 목록' },
+    { key: 'file', icon: <IconFile size={14} />, label: '변경된 파일', value: `${files.length}`, detail: files.length ? `+${totalAdd} −${totalDel}` : '없음', tip: '이번 작업에서 생성·수정된 파일 — 누르면 목록·diff' },
+    { key: 'ctx', ring: ctxPct, label: '컨텍스트', value: `${ctxPct}%`, detail: ctxItems[0].detail, tip: '대화의 컨텍스트 사용량·사용 한도 — 누르면 자세히', align: 'r' }
   ]
 
   const popBody = (key: WorkTab): ReactNode => {
@@ -1198,7 +1198,11 @@ export const WorkBar = memo(function WorkBar({
       <div className="workbar" ref={ref}>
         {chips.map((c) => (
           <div className="wb-cell" key={c.key}>
-            <button className={'wb-chip' + (open === c.key ? ' on' : '')} onClick={() => toggle(c.key)}>
+            <button
+              className={'wb-chip' + (open === c.key ? ' on' : ' has-tip')}
+              data-tip={c.tip}
+              onClick={() => toggle(c.key)}
+            >
               {c.ring != null ? (
                 <span className="cc-ring" style={{ ['--p']: c.ring } as CSSProperties} />
               ) : (

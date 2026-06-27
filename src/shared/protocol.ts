@@ -501,6 +501,11 @@ export const IPC = {
   mcpList: 'mcp:list', // enumerate user + project + local MCP servers with on/off state
   mcpSetEnabled: 'mcp:set-enabled', // turn an MCP server on/off (persisted to the app home)
   shellOpenPath: 'shell:open-path', // open a file with the OS default app
+  shellRevealPath: 'shell:reveal-path', // reveal a file/folder in the OS file manager (Explorer/Finder)
+  fsRename: 'fs:rename', // rename a file/folder within its parent (explorer context menu)
+  fsDelete: 'fs:delete', // move a file/folder to the OS trash / recycle bin (explorer context menu)
+  fsCreate: 'fs:create', // create a new empty file or folder (explorer context menu)
+  fsMove: 'fs:move', // move a file/folder into another folder (explorer drag & drop)
   readFile: 'fs:read-file', // read a file's text content for the in-app viewer card
   writeFile: 'fs:write-file', // overwrite a file's text content from the in-app editor (Ctrl+S)
   closeShortcut: 'shortcut:close', // Ctrl+W pressed (main swallows it) → renderer closes the open viewer
@@ -516,6 +521,8 @@ export const IPC = {
   lspWarm: 'lsp:warm', // eagerly open a specific file on its server so it's indexed before typing
   lspVerseRegistry: 'lsp:verse-registry', // accurate Verse type registry (digests+project) for colouring
   lspProjectStatus: 'lsp:project-status', // aggregate analysis state for a folder (explorer badge)
+  lspVerseDigests: 'lsp:verse-digests', // Verse API digest folders for the explorer (Verse.org/Fortnite.com/…)
+  lspVerseExcludes: 'lsp:verse-excludes', // files.exclude globs for "Verse 위주로 보기" (from .code-workspace)
   lspInstall: 'lsp:install', // download a native language server (C#/C++) on user request
   lspServers: 'lsp:servers', // list every known language server + provisioning state (settings)
   lspInstallServer: 'lsp:install-server', // download a server by id (settings)

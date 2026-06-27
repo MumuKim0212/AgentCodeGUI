@@ -66,6 +66,16 @@ export interface WindowApi {
   saveUiPrefs(prefs: Record<string, unknown>): Promise<void>
   /** open a file (cwd-relative) with the OS default app */
   openPath(cwd: string, relPath: string): Promise<void>
+  /** reveal (highlight) a file/folder in the OS file manager — explorer "파일 탐색기에서 보기" */
+  revealPath(cwd: string, relPath: string): Promise<void>
+  /** rename a file/folder within its parent — explorer context menu */
+  renamePath(cwd: string, relPath: string, newName: string): Promise<{ ok: boolean; error?: string }>
+  /** move a file/folder to the OS trash (recycle bin) — explorer context menu */
+  deletePath(cwd: string, relPath: string): Promise<{ ok: boolean; error?: string }>
+  /** create a new empty file (dir=false) or folder (dir=true) — explorer context menu */
+  createPath(cwd: string, relPath: string, dir: boolean): Promise<{ ok: boolean; error?: string }>
+  /** move a file/folder to a new path within the project — explorer drag & drop */
+  movePath(cwd: string, srcRel: string, destRel: string): Promise<{ ok: boolean; error?: string }>
   /** read a file's text content (cwd-relative or absolute) for the in-app viewer card */
   readFile(cwd: string, relPath: string): Promise<FileReadResult>
   /** overwrite a file's text content (cwd-relative or absolute) from the in-app editor */
@@ -74,8 +84,9 @@ export interface WindowApi {
   onCloseShortcut(cb: () => void): () => void
   /** enumerate project files (relative POSIX paths) to power the "@" mention palette */
   listFiles(cwd: string): Promise<string[]>
-  /** list one folder's entries (folders first) for the file explorer — `rel` is cwd-relative ('' = root) */
-  listDir(cwd: string, rel: string): Promise<DirEntry[]>
+  /** list one folder's entries (folders first) for the file explorer — `rel` is cwd-relative ('' = root).
+   *  `exclude` = files.exclude globs and `hideEmpty` together give the "Verse 위주로 보기" filtered tree. */
+  listDir(cwd: string, rel: string, exclude?: string[], hideEmpty?: boolean): Promise<DirEntry[]>
   /** git — 탐색기의 Git 카드 (히스토리·변경 사항·커밋/푸시/풀) */
   git: {
     /** cwd가 속한 레포 최상위(.git 상위 폴더 탐색 포함), 없으면 null — cwd별 캐시 */
@@ -121,6 +132,13 @@ export interface WindowApi {
     verseRegistry(cwd: string, relPath: string): Promise<VerseRegistry | null>
     /** aggregate analysis state for a folder (explorer badge: analyzing/ready + percent) */
     projectStatus(cwd: string): Promise<LspProjectStatus>
+    /** Verse API digest folders to show as view-only roots in the explorer (mirrors UEFN's
+     *  VS Code view): the project's packages — Verse source + Verse.org/Fortnite.com/… digests —
+     *  as { path, name }. [] when `cwd` isn't a generated Verse project. */
+    verseDigests(cwd: string): Promise<{ path: string; name: string }[]>
+    /** files.exclude globs for the "Verse 위주로 보기" filter (UEFN .code-workspace + defaults).
+     *  [] when `cwd` isn't a Verse project — the filter toggle then stays hidden. */
+    verseExcludes(cwd: string): Promise<string[]>
     /** download this file's native language server (C#/C++) — user-initiated */
     install(cwd: string, relPath: string): Promise<{ ok: boolean; error?: string }>
     /** subscribe to streamed server-download progress (returns an unsubscribe fn) */

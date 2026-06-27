@@ -616,6 +616,82 @@ function registerIpc(): void {
     const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd, a.relPath)
     await shell.openPath(abs)
   })
+  // Reveal (highlight) a file/folder in the OS file manager — explorer "파일 탐색기에서 보기"
+  ipcMain.handle(IPC.shellRevealPath, async (_e, a: { cwd: string; relPath: string }) => {
+    const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+    shell.showItemInFolder(abs)
+  })
+  // Rename a file/folder within its own parent dir. Rejects path separators / dup names.
+  ipcMain.handle(
+    IPC.fsRename,
+    async (_e, a: { cwd: string; relPath: string; newName: string }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+        const name = (a.newName || '').trim()
+        if (!name || /[\\/]/.test(name) || name === '.' || name === '..') return { ok: false, error: '올바른 이름이 아니에요' }
+        const dest = path.join(path.dirname(abs), name)
+        if (path.resolve(dest) === path.resolve(abs)) return { ok: true } // unchanged
+        if (fs.existsSync(dest)) return { ok: false, error: '같은 이름이 이미 있어요' }
+        await fs.promises.rename(abs, dest)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '이름을 바꿀 수 없어요' }
+      }
+    }
+  )
+  // Move a file/folder to the OS trash (recycle bin) — recoverable, safer than rm
+  ipcMain.handle(
+    IPC.fsDelete,
+    async (_e, a: { cwd: string; relPath: string }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+        await shell.trashItem(abs)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '삭제할 수 없어요' }
+      }
+    }
+  )
+  // Move a file/folder to a new path (drag & drop). Stays within the root, refuses to move a
+  // folder into itself/its descendant, and won't clobber an existing name at the destination.
+  ipcMain.handle(
+    IPC.fsMove,
+    async (_e, a: { cwd: string; srcRel: string; destRel: string }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const root = path.resolve(a.cwd || '')
+        const src = path.resolve(root, a.srcRel)
+        const dest = path.resolve(root, a.destRel)
+        const inside = (p: string): boolean => p === root || p.startsWith(root + path.sep)
+        if (!inside(src) || !inside(dest)) return { ok: false, error: '경로가 프로젝트 밖이에요' }
+        if (src === dest) return { ok: true }
+        if (dest === src || dest.startsWith(src + path.sep)) return { ok: false, error: '폴더를 자기 안으로 옮길 수 없어요' }
+        if (fs.existsSync(dest)) return { ok: false, error: '대상에 같은 이름이 이미 있어요' }
+        await fs.promises.rename(src, dest)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '옮길 수 없어요' }
+      }
+    }
+  )
+  // Create a new empty file or folder. Fails if something with that name already exists.
+  ipcMain.handle(
+    IPC.fsCreate,
+    async (_e, a: { cwd: string; relPath: string; dir: boolean }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+        if (fs.existsSync(abs)) return { ok: false, error: '같은 이름이 이미 있어요' }
+        if (a.dir) {
+          await fs.promises.mkdir(abs, { recursive: true })
+        } else {
+          await fs.promises.mkdir(path.dirname(abs), { recursive: true })
+          await fs.promises.writeFile(abs, '', { flag: 'wx' }) // wx: fail if it appeared meanwhile
+        }
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '만들 수 없어요' }
+      }
+    }
+  )
 
   // Read a file's text for the in-app viewer card. Caps the read so a huge file
   // can't stall the UI, and rejects binaries (a null byte in the head) so the card
@@ -669,7 +745,9 @@ function registerIpc(): void {
   ipcMain.handle(IPC.listFiles, async (_e, cwd: string) => listProjectFiles(cwd || ''))
 
   // One folder's entries for the file explorer — called lazily as folders expand
-  ipcMain.handle(IPC.listDir, async (_e, a: { cwd: string; rel: string }) => listDir(a.cwd || '', a.rel || ''))
+  ipcMain.handle(IPC.listDir, async (_e, a: { cwd: string; rel: string; exclude?: string[]; hideEmpty?: boolean }) =>
+    listDir(a.cwd || '', a.rel || '', a.exclude, a.hideEmpty)
+  )
 
   // LSP code intelligence for the in-app viewer — lazy per-project language servers.
   // Failures degrade to null/[]: the viewer just loses hover/jump, never errors.
@@ -724,6 +802,20 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle(IPC.lspProjectStatus, async (_e, a: { cwd: string }) => lspManager.projectStatus(a.cwd || ''))
+  ipcMain.handle(IPC.lspVerseDigests, async (_e, a: { cwd: string }) => {
+    try {
+      return lspManager.verseDigestFolders(a.cwd || '')
+    } catch {
+      return []
+    }
+  })
+  ipcMain.handle(IPC.lspVerseExcludes, async (_e, a: { cwd: string }) => {
+    try {
+      return lspManager.verseFileExcludes(a.cwd || '')
+    } catch {
+      return []
+    }
+  })
   ipcMain.handle(IPC.lspInstall, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.install(a.cwd || '', a.relPath, (p) => send(IPC.lspInstallProgress, p))
   )
