@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type {
   EngineVersionEntry,
   EngineVersionState,
@@ -16,6 +16,7 @@ import {
   IconRefresh,
   IconClaude,
   IconChevDown,
+  IconChevRight,
   IconAlert,
   IconCheck,
   IconTrash,
@@ -608,6 +609,8 @@ function LspView() {
   const [card, setCard] = useState<LspCard | null>(null)
   // Verse 공식 문서 호버 언어 — 'ko'(기본, 한국어 번역) / 'en'(원문). 메인은 ui-prefs 저장 IPC에서 이 값을 읽어 호버 번역을 켜고 끈다.
   const [verseKo, setVerseKo] = useState<boolean>(() => getPref<string>('verseDocLang', 'ko') !== 'en')
+  // Verse 행 펼침 — 클릭하면 '공식 문서 한국어' 등 Verse 전용 옵션이 행 아래로 펼쳐진다.
+  const [verseOpen, setVerseOpen] = useState(false)
 
   const refresh = (): void => {
     window.api.lsp
@@ -714,48 +717,98 @@ function LspView() {
             {servers.map((s) => {
               const installing = s.state === 'installing'
               const p = pct[s.id]
+              // Verse(external)만 행을 클릭해 펼치는 디스클로저 — 하위에 '공식 문서 한국어' 옵션을 담는다.
+              const isVerse = s.kind === 'external'
               return (
-                <div className="ext-item" key={s.id}>
-                  <FileBadge path={LSP_BADGE[s.id] ?? 'a.txt'} size={30} />
-                  <div className="ext-main">
-                    <div className="ext-top">
-                      <span className="ext-name">{s.langs}</span>
-                      {s.state === 'bundled' && <span className="ver-chip latest">앱 내장</span>}
-                      {s.kind !== 'external' && s.state === 'installed' && (
-                        <span className="ver-chip latest">설치됨</span>
-                      )}
-                      {s.kind === 'external' &&
-                        (s.state === 'installed' ? (
-                          <span className="ver-chip latest">지정됨</span>
-                        ) : (
-                          <span className="ver-chip">미지정</span>
-                        ))}
-                      {s.requires && <span className="ver-chip">{s.requires}</span>}
+                <Fragment key={s.id}>
+                  <div
+                    className={'ext-item' + (isVerse ? ' disc-row' + (verseOpen ? ' open' : '') : '')}
+                    role={isVerse ? 'button' : undefined}
+                    aria-expanded={isVerse ? verseOpen : undefined}
+                    onClick={isVerse ? () => setVerseOpen((o) => !o) : undefined}
+                  >
+                    {isVerse && (
+                      <span className="ext-chev" aria-hidden>
+                        <IconChevRight size={15} />
+                      </span>
+                    )}
+                    <FileBadge path={LSP_BADGE[s.id] ?? 'a.txt'} size={30} />
+                    <div className="ext-main">
+                      <div className="ext-top">
+                        <span className="ext-name">{s.langs}</span>
+                        {s.state === 'bundled' && <span className="ver-chip latest">앱 내장</span>}
+                        {s.kind !== 'external' && s.state === 'installed' && (
+                          <span className="ver-chip latest">설치됨</span>
+                        )}
+                        {s.kind === 'external' &&
+                          (s.state === 'installed' ? (
+                            <span className="ver-chip latest">지정됨</span>
+                          ) : (
+                            <span className="ver-chip">미지정</span>
+                          ))}
+                        {s.requires && <span className="ver-chip">{s.requires}</span>}
+                        {/* Verse 행에 현재 문서 언어를 칩으로 — 펼치지 않아도 상태가 한눈에 보인다 */}
+                        {isVerse && <span className="ver-chip">{verseKo ? '문서 한국어' : '문서 원문'}</span>}
+                      </div>
+                      <div className="ext-desc ext-cmd">{s.exts}</div>
+                      {s.kind === 'external' && s.path && <div className="ext-desc ext-cmd">{s.path}</div>}
                     </div>
-                    <div className="ext-desc ext-cmd">{s.exts}</div>
-                    {s.kind === 'external' && s.path && <div className="ext-desc ext-cmd">{s.path}</div>}
+                    {s.kind === 'download' &&
+                      (s.state === 'installed' ? (
+                        <button className="inst-btn ghost" onClick={() => setConfirm(s)}>
+                          <IconTrash size={13} /> 삭제
+                        </button>
+                      ) : (
+                        <button className="inst-btn" disabled={installing} onClick={() => doInstall(s)}>
+                          {installing ? `설치 중…${p != null ? ` ${p}%` : ''}` : '설치'}
+                        </button>
+                      ))}
+                    {s.kind === 'external' &&
+                      (s.state === 'installed' ? (
+                        <button
+                          className="inst-btn ghost"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            doVerseClear()
+                          }}
+                        >
+                          <IconTrash size={13} /> 삭제
+                        </button>
+                      ) : (
+                        <button
+                          className="inst-btn"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            doVersePick()
+                          }}
+                        >
+                          설정
+                        </button>
+                      ))}
                   </div>
-                  {s.kind === 'download' &&
-                    (s.state === 'installed' ? (
-                      <button className="inst-btn ghost" onClick={() => setConfirm(s)}>
-                        <IconTrash size={13} /> 삭제
+                  {/* Verse 펼침 — 공식 문서 한국어 토글 (행에 연결된 하위 옵션) */}
+                  {isVerse && verseOpen && (
+                    <div className="ext-item ext-sub">
+                      <div className="ext-main">
+                        <div className="ext-sub-name">공식 문서를 한국어로 보기</div>
+                        <div className="ext-desc ext-sub-desc">
+                          <code>/Verse.org</code> · <code>/UnrealEngine.com</code> · <code>/Fortnite.com</code> API 주석
+                          설명을 호버에서 한국어로 보여줍니다. 끄면 영어 원문으로 표시합니다. (번역에 없는 항목이나 내 코드
+                          주석은 원문 그대로)
+                        </div>
+                      </div>
+                      <button
+                        className={'skill-toggle' + (verseKo ? ' on' : '')}
+                        role="switch"
+                        aria-checked={verseKo}
+                        aria-label={verseKo ? 'Verse 한국어 문서 끄기' : 'Verse 한국어 문서 켜기'}
+                        onClick={toggleVerseKo}
+                      >
+                        <span className="skill-knob" />
                       </button>
-                    ) : (
-                      <button className="inst-btn" disabled={installing} onClick={() => doInstall(s)}>
-                        {installing ? `설치 중…${p != null ? ` ${p}%` : ''}` : '설치'}
-                      </button>
-                    ))}
-                  {s.kind === 'external' &&
-                    (s.state === 'installed' ? (
-                      <button className="inst-btn ghost" onClick={doVerseClear}>
-                        <IconTrash size={13} /> 삭제
-                      </button>
-                    ) : (
-                      <button className="inst-btn" onClick={doVersePick}>
-                        설정
-                      </button>
-                    ))}
-                </div>
+                    </div>
+                  )}
+                </Fragment>
               )
             })}
           </div>
@@ -769,30 +822,7 @@ function LspView() {
           Verse는 Epic의 <code>verse-lsp</code> 가 필요합니다 — UEFN/포트나이트의{' '}
           <code>Verse.vsix</code>(또는 <code>verse-lsp.exe</code>) 경로를 지정하면 정의 이동·호버·심볼이 켜집니다.
           소스/디제스트 폴더는 프로젝트의 <code>.vproject</code> 에서 자동으로 찾습니다. 지정 전에는 구문 강조만
-          동작합니다.
-        </div>
-
-        <div className="ext-list">
-          <div className="ext-item skill">
-            <div className="ext-main">
-              <div className="ext-top">
-                <span className="ext-name">Verse 공식 문서 한국어 보기</span>
-              </div>
-              <div className="ext-desc">
-                <code>/Verse.org</code> · <code>/UnrealEngine.com</code> · <code>/Fortnite.com</code> API 주석 설명을
-                호버에서 한국어로 보여줍니다. 끄면 영어 원문으로 표시합니다. (번역에 없는 항목이나 내 코드 주석은 원문 그대로)
-              </div>
-            </div>
-            <button
-              className={'skill-toggle' + (verseKo ? ' on' : '')}
-              role="switch"
-              aria-checked={verseKo}
-              aria-label={verseKo ? 'Verse 한국어 문서 끄기' : 'Verse 한국어 문서 켜기'}
-              onClick={toggleVerseKo}
-            >
-              <span className="skill-knob" />
-            </button>
-          </div>
+          동작합니다. <strong>Verse 행을 클릭하면 공식 문서를 한국어로 볼지 켜고 끌 수 있어요.</strong>
         </div>
       </div>
 

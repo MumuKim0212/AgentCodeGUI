@@ -2330,6 +2330,17 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 .skill-knob{ position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); transition:transform .16s cubic-bezier(.2,.8,.2,1); }
 .skill-toggle.on .skill-knob{ transform:translateX(16px); }
 
+/* Verse 행 펼치기(디스클로저) + 하위 옵션 행 (Settings ▸ Code) — 행을 클릭하면 셰브론이
+   돌고 아래에 'ext-sub' 옵션 행이 펼쳐진다. 클릭 가능함을 알리려 skill 행과 같은 강조 호버. */
+.ext-item.disc-row{ position:relative; cursor:pointer; transition:background .14s, border-color .14s, box-shadow .14s; }
+.ext-item.disc-row:hover{ z-index:1; background:var(--surface-2); border-color:var(--accent-line); box-shadow:var(--shadow-sm); }
+.ext-chev{ flex:0 0 auto; display:inline-flex; align-items:center; color:var(--text-4); margin:0 -5px 0 -2px; transition:transform .16s ease, color .14s; }
+.ext-item.disc-row.open .ext-chev{ transform:rotate(90deg); color:var(--text-2); }
+.ext-item.ext-sub{ padding:12px 16px 13px 34px; background:var(--inset); align-items:center; }
+.ext-sub-name{ font-size:13px; font-weight:600; color:var(--text-2); }
+.ext-sub-desc{ white-space:normal; overflow:visible; text-overflow:clip; margin-top:4px; line-height:1.55; }
+.ext-sub-desc code{ font-family:var(--font-mono); color:var(--accent-2); }
+
 /* version manager */
 .sec-head{ display:flex; align-items:flex-end; gap:10px; margin-bottom:13px; }
 .sec-title{ font-size:14px; font-weight:600; letter-spacing:-.01em; }
