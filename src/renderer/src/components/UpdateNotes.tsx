@@ -68,6 +68,19 @@ const RELEASES: Record<string, Release> = {
             <b>대화 중심 추천</b>을, 다크모드 Claude 아바타엔 <b>코랄 브랜드색</b>을 되살렸습니다.
           </>
         )
+      },
+      {
+        num: '05',
+        tag: 'Verse · 한국어',
+        name: '공식 문서를, 한국어로',
+        desc: (
+          <>
+            <b>/Verse.org</b> · <b>/UnrealEngine.com</b> · <b>/Fortnite.com</b> API 주석 설명을 호버에서{' '}
+            <b>한국어로</b> 보여줘요(설정에서 원문↔한국어 전환). 선언 위치에서도 — 네이티브·확장 메서드,{' '}
+            <b>@editable</b> 같은 속성까지 호버 카드가 뜨고, 속성은 지정자와 갈라 <b>ATTRIBUTES</b> 행으로
+            또렷하게 보여요.
+          </>
+        )
       }
     ]
   },

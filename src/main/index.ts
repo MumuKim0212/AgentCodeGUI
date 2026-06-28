@@ -8,6 +8,7 @@ import { ClaudeEngine } from './claude/engine'
 import * as engineVersions from './engine/versions'
 import { readProfile, writeProfile } from './profile'
 import { readUiPrefs, writeUiPrefs } from './uiPrefs'
+import { setVerseDocKo } from './lsp/verseDocKo'
 import { readChats, writeChats } from './chats'
 import { readMulti, writeMulti } from './maStore'
 import { readTalk, writeTalk } from './talkStore'
@@ -594,9 +595,13 @@ function registerIpc(): void {
   ipcMain.handle(IPC.chatsGet, async () => readChats())
   ipcMain.handle(IPC.chatsSave, async (_e, data: unknown) => writeChats(data))
 
-  // renderer UI prefs (viewer size/zoom, chat zoom), stored in the app home folder
+  // renderer UI prefs (viewer size/zoom, chat zoom, verse doc language), in the app home folder
   ipcMain.handle(IPC.uiPrefsGet, async () => readUiPrefs())
-  ipcMain.handle(IPC.uiPrefsSave, async (_e, prefs: Record<string, unknown>) => writeUiPrefs(prefs))
+  ipcMain.handle(IPC.uiPrefsSave, async (_e, prefs: Record<string, unknown>) => {
+    writeUiPrefs(prefs)
+    setVerseDocKo(prefs?.verseDocLang !== 'en') // Verse hover docs in Korean unless '원문 보기'
+  })
+  setVerseDocKo(readUiPrefs().verseDocLang !== 'en') // apply the saved choice at startup
 
   // skills (SKILL.md capabilities): list global (~/.claude) + project (.claude),
   // and turn them on/off. The on/off choice is applied to runs by the engine.

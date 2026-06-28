@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { APP_HOME } from '../engine/versions'
 import { ueRoot } from './ue'
+import { translateVerseDoc } from './verseDocKo'
 
 /* ============================================================
  * Verse language server (Epic's verse-lsp). Unlike the other
@@ -153,7 +154,9 @@ function extractVerseDoc(lines: string[], declLine: number): string {
     }
     break // 코드 줄 — 중단
   }
-  return out.join('\n').trim()
+  // 호버에 보이는 최종 문구 — 한국어 보기가 켜져 있고 이 API 주석의 번역이 팩에 있으면
+  // 한국어로, 없으면(유저 코드 주석·신규 API) 영어 원문 그대로. 끄면 무조건 원문.
+  return translateVerseDoc(out.join('\n').trim())
 }
 
 // Verse 키워드·지정자·속성·내장 타입 용어집 — verse-lsp는 이 언어 키워드들에 호버를 주지
@@ -270,7 +273,16 @@ const VERSE_GLOSSARY: Record<string, string> = {
   doc: '심볼에 설명 글을 답니다.',
   available: '어느 버전부터 사용할 수 있는지 표시합니다.',
   deprecated: '더 이상 권장하지 않는 기능입니다. 앞으로 제거될 수 있으니 대체 기능으로 옮기는 것이 좋습니다.',
-  experimental: '아직 실험 단계라 나중에 바뀔 수 있습니다.'
+  experimental: '아직 실험 단계라 나중에 바뀔 수 있습니다.',
+  // 속성을 "정의"할 때 붙이는 메타 속성 — `@editable` 같은 속성의 정의 위에 달린다. 다이제스트에
+  // 문서 주석이 없어 직접 설명한다(엔진/컴파일러 내장이라 일반 코드에서 새로 만들 일은 거의 없다).
+  attribscope_class: '정의 중인 속성을 클래스 멤버에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
+  attribscope_struct: '정의 중인 속성을 구조체 멤버에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
+  attribscope_data: '정의 중인 속성을 데이터 정의에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
+  attribscope_enum: '정의 중인 속성을 `enum` 에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
+  attribscope_interface: '정의 중인 속성을 인터페이스에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
+  attribscope_module: '정의 중인 속성을 모듈에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
+  customattribhandler: '이 속성을 엔진이 전용 로직으로 처리한다는 표시입니다. `@editable` 같은 내장 속성을 정의할 때 씁니다.'
 }
 
 /**
@@ -349,6 +361,18 @@ function wordAt(line: string, col: number): string | null {
   return /^[A-Za-z_]\w*$/.test(w) ? w : null
 }
 
+// Index just past the ')' that matches the '(' at `open` (depth-balanced), or -1. Needed because
+// Verse method receivers/params nest parens — `subtype(component)`, `voice_channel(member_info)`,
+// `(local:)Persona…` — which a lazy `\(([^]*?)\)` regex would cut at the first ')'.
+function balancedParen(s: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < s.length; i++) {
+    if (s[i] === '(') depth++
+    else if (s[i] === ')' && --depth === 0) return i + 1
+  }
+  return -1
+}
+
 // The type whose body encloses `declLine` — the nearest `Name := class|struct|enum|interface` header
 // above it at a SHALLOWER indent. Used to qualify a synthesized member card (`(/Type:)Field…`).
 function verseEnclosingType(lines: string[], declLine: number): string | null {
@@ -360,6 +384,24 @@ function verseEnclosingType(lines: string[], declLine: number): string | null {
     if (tm && verseIndent(lines[i] ?? '') < declIndent) return tm[1]
   }
   return null
+}
+
+// `@editable` / `@experimental` 등 선언 줄 바로 위의 @속성 이름들(붙어 있는 블록 안). `@doc`는
+// 문서 본문으로 따로 처리하므로 제외. extractVerseDoc과 같은 위쪽 스캔 규칙(빈 줄/코드 줄에서 중단).
+function verseDeclAttrs(lines: string[], declLine: number): string[] {
+  const out: string[] = []
+  for (let i = declLine - 1; i >= 0; i--) {
+    const t = (lines[i] ?? '').trim()
+    if (t === '') break
+    if (t.startsWith('@')) {
+      const am = /^@([A-Za-z_]\w*)/.exec(t)
+      if (am && am[1] !== 'doc') out.unshift(am[1])
+      continue
+    }
+    if (t.startsWith('#') || (t.startsWith('<#') && t.endsWith('#>'))) continue
+    break // 코드 줄 — 중단
+  }
+  return out
 }
 
 /**
@@ -381,25 +423,51 @@ export async function verseDeclHover(absFile: string, line: number, col: number,
   const word = wordAt(raw, col)
   if (!word) return null
   const s = raw.trim()
+  // 선언 위의 @속성들 — verse-lsp는 사용처 호버에서 이를 `<editable>` 지정자로 접어 주지만 선언부엔
+  // 호버가 없다. 같은 모양(`<attr>`)으로 sig의 이름 뒤에 실어, 카드가 사용처와 동일하게 ATTRIBUTES
+  // 행을 그리게 한다(@속성/지정자 구분은 렌더러 splitVerseSpecs가 한다).
+  const attrSpecs = verseDeclAttrs(lines, line)
+    .map((a) => `<${a}>`)
+    .join('')
   let sig: string | null = null
   let isMember = false // ②/③ are members of an enclosing type; ① is the type itself
   // ① 타입 선언: Name<specs> := class|struct|enum|interface|module<specs>(super)?
   let m = /^([A-Za-z_]\w*)((?:<[^>]*>)*)\s*:=\s*(class|struct|enum|interface|module)\b((?:<[^>]*>)*)/.exec(s)
-  if (m && m[1] === word) sig = `${m[3]} ${m[1]}${m[2]}${m[4]}`
-  // ② 함수/메서드: Name<specs>(params)<effects>:ret = …
+  if (m && m[1] === word) sig = `${m[3]} ${m[1]}${m[2]}${attrSpecs}${m[4]}`
+  // ② 함수/메서드: [(receiver).|(/Module:)] Name<specs>(params)<effects>:ret [= …]
+  //    · 네이티브 선언은 `= 본문`이 없어 `:ret`에서 끝난다 → `=`는 선택적
+  //    · 확장 메서드는 `(Recv:type …).Name…`로 시작(리시버는 떼어냄), 자유 함수는 `(/Module:)Name…`(한정자 보존)
+  //    · 매개변수·리시버의 중첩 괄호를 담으려 괄호 균형으로 끊는다(정규식 불가)
   if (!sig) {
-    m = /^([A-Za-z_]\w*)((?:<[^>]*>)*)\(([^]*?)\)((?:<[^>]*>)*)\s*:\s*([^=]+?)\s*=/.exec(s)
-    if (m && m[1] === word) {
-      sig = `${m[1]}${m[2]}(${m[3].trim()})${m[4]}:${m[5].trim()}`
-      isMember = true
+    let t = s
+    let qual = '' // 보존할 모듈 한정자 (/path:)
+    if (t.startsWith('(')) {
+      const e = balancedParen(t, 0)
+      if (e > 0 && t[e] === '.') t = t.slice(e + 1) // 확장 메서드 리시버 → 제거
+      else if (e > 0 && t[1] === '/') {
+        qual = t.slice(0, e)
+        t = t.slice(e)
+      }
+    }
+    const nm = /^([A-Za-z_]\w*)((?:<[^>]*>)*)\(/.exec(t)
+    if (nm && nm[1] === word) {
+      const pOpen = nm[0].length - 1 // '(' 위치
+      const pEnd = balancedParen(t, pOpen)
+      const tail = pEnd > 0 ? /^((?:<[^>]*>)*)\s*:\s*([^=]+?)\s*(?:=|$)/.exec(t.slice(pEnd)) : null
+      if (pEnd > 0 && tail) {
+        sig = `${qual}${nm[1]}${nm[2]}${attrSpecs}(${t.slice(pOpen + 1, pEnd - 1).trim()})${tail[1]}:${tail[2].trim()}`
+        isMember = !qual // 한정자가 이미 있으면 enclosing-type 한정자를 또 붙이지 않는다
+      }
     }
   }
-  // ③ var / 필드: [var|set] Name<specs>:type [= value]   (':='는 ①에서 처리)
+  // ③ var / 필드: [var|set]<specs> Name<specs>:type [= value]   (':='는 ①에서 처리)
+  //    다이제스트는 `var<private> Name<native><public>:type`처럼 바인딩 키워드에 지정자가
+  //    붙는다 — parseVerseSig는 `var `(공백)만 바인딩으로 읽으므로 키워드만 떼어 출력한다.
   if (!sig && !s.includes(':=')) {
-    m = /^(var\s+|set\s+)?([A-Za-z_]\w*)((?:<[^>]*>)*)\s*:\s*([^=]+?)(?:\s*=\s*.*)?$/.exec(s)
+    m = /^((?:var|set)(?:<[^>]*>)*\s+)?([A-Za-z_]\w*)((?:<[^>]*>)*)\s*:\s*([^=]+?)(?:\s*=\s*.*)?$/.exec(s)
     if (m && m[2] === word) {
-      const bind = (m[1] || '').trim()
-      sig = `${bind ? bind + ' ' : ''}${m[2]}${m[3]}:${m[4].trim()}`
+      const bind = m[1] ? (/^(var|set)/.exec(m[1])?.[1] ?? '') : ''
+      sig = `${bind ? bind + ' ' : ''}${m[2]}${m[3]}${attrSpecs}:${m[4].trim()}`
       isMember = true
     }
   }

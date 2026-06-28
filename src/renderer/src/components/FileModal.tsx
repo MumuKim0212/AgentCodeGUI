@@ -488,6 +488,15 @@ const VERSE_EFFECT = new Set([
   'transacts', 'computes', 'reads', 'writes', 'decides', 'varies',
   'converges', 'suspends', 'no_rollback', 'allocates', 'predicts'
 ])
+// @attributes are metadata (written `@editable`), NOT `<specifiers>` — but verse-lsp folds them
+// into its hover as `<editable>`, so we pull them back into their own 'attributes' row shown with
+// the `@`. Covers the @editable family plus the meta-attributes used on attribute definitions.
+const VERSE_ATTR = new Set([
+  'editable', 'doc', 'available', 'deprecated', 'experimental', 'customattribhandler',
+  'attribscope_class', 'attribscope_struct', 'attribscope_data',
+  'attribscope_enum', 'attribscope_interface', 'attribscope_module'
+])
+const isVerseAttr = (n: string): boolean => VERSE_ATTR.has(n) || n.startsWith('editable_')
 // '<public>' / '<getter(GetX)>' → 'public' / 'getter'
 function verseSpecName(spec: string): string {
   const m = /^<\s*([A-Za-z_]\w*)/.exec(spec)
@@ -499,11 +508,13 @@ function verseSpecName(spec: string): string {
 function splitVerseSpecs(mods: string[], kind?: string, write?: string): { k: string; items: string[] }[] {
   const access: string[] = []
   const effects: string[] = []
+  const attrs: string[] = []
   const other: string[] = []
   for (const m of mods) {
     const n = verseSpecName(m)
     if (VERSE_ACCESS.has(n)) access.push(m)
     else if (VERSE_EFFECT.has(n)) effects.push(m)
+    else if (isVerseAttr(n)) attrs.push('@' + n) // <editable> → @editable (속성으로 되돌림)
     else other.push(m)
   }
   // A DATA member with no access specifier defaults to `internal` — surface it so the card is
@@ -525,6 +536,7 @@ function splitVerseSpecs(mods: string[], kind?: string, write?: string): { k: st
   }
   if (other.length) rows.push({ k: 'specifiers', items: other })
   if (effects.length) rows.push({ k: 'effects', items: effects })
+  if (attrs.length) rows.push({ k: 'attributes', items: attrs })
   return rows
 }
 

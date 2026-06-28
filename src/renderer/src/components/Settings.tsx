@@ -8,6 +8,7 @@ import type {
   LspServerInfo
 } from '@shared/protocol'
 import { FileBadge } from './fileType'
+import { getPref, setPref } from '../lib/prefs'
 import {
   IconClose,
   IconServer,
@@ -605,6 +606,8 @@ function LspView() {
   const [pct, setPct] = useState<Record<string, number | null>>({})
   const [confirm, setConfirm] = useState<LspServerInfo | null>(null)
   const [card, setCard] = useState<LspCard | null>(null)
+  // Verse 공식 문서 호버 언어 — 'ko'(기본, 한국어 번역) / 'en'(원문). 메인은 ui-prefs 저장 IPC에서 이 값을 읽어 호버 번역을 켜고 끈다.
+  const [verseKo, setVerseKo] = useState<boolean>(() => getPref<string>('verseDocLang', 'ko') !== 'en')
 
   const refresh = (): void => {
     window.api.lsp
@@ -686,6 +689,13 @@ function LspView() {
     await window.api.lsp.clearVersePath().catch(() => {})
     refresh()
   }
+  const toggleVerseKo = (): void => {
+    setVerseKo((on) => {
+      const next = !on
+      setPref('verseDocLang', next ? 'ko' : 'en') // 메인이 다음 호버부터 적용
+      return next
+    })
+  }
 
   return (
     <>
@@ -760,6 +770,29 @@ function LspView() {
           <code>Verse.vsix</code>(또는 <code>verse-lsp.exe</code>) 경로를 지정하면 정의 이동·호버·심볼이 켜집니다.
           소스/디제스트 폴더는 프로젝트의 <code>.vproject</code> 에서 자동으로 찾습니다. 지정 전에는 구문 강조만
           동작합니다.
+        </div>
+
+        <div className="ext-list">
+          <div className="ext-item skill">
+            <div className="ext-main">
+              <div className="ext-top">
+                <span className="ext-name">Verse 공식 문서 한국어 보기</span>
+              </div>
+              <div className="ext-desc">
+                <code>/Verse.org</code> · <code>/UnrealEngine.com</code> · <code>/Fortnite.com</code> API 주석 설명을
+                호버에서 한국어로 보여줍니다. 끄면 영어 원문으로 표시합니다. (번역에 없는 항목이나 내 코드 주석은 원문 그대로)
+              </div>
+            </div>
+            <button
+              className={'skill-toggle' + (verseKo ? ' on' : '')}
+              role="switch"
+              aria-checked={verseKo}
+              aria-label={verseKo ? 'Verse 한국어 문서 끄기' : 'Verse 한국어 문서 켜기'}
+              onClick={toggleVerseKo}
+            >
+              <span className="skill-knob" />
+            </button>
+          </div>
         </div>
       </div>
 
