@@ -112,6 +112,11 @@ export function verseScopes(code: string): VerseScopes {
   return { members, methods, locals, fileTypes }
 }
 
+// Std-lib structs that used to be (wrongly) keyword-coloured. They live in the digests, so the
+// registry already knows their kind once it loads — this is only the fallback for when no digest is
+// reachable yet, so they still read in the struct colour (not default white) instead of keyword-blue.
+const VERSE_BUILTIN_STRUCTS = new Set(['vector3', 'vector2', 'rotation', 'transform', 'color'])
+
 // Recolour highlight.js output for .verse from FACTS, not guesses. The grammar no longer assumes
 // "lowercase = type" (everything unknown is a plain `hljs-variable`); here we keep the default
 // (white) for anything we can't confirm, and only colour identifiers we KNOW the kind of:
@@ -122,7 +127,8 @@ export function verseScopes(code: string): VerseScopes {
 export function recolorVerse(html: string, scopes: VerseScopes): string {
   const { members, methods, fileTypes } = scopes
   const reg = verseReg()
-  const typeKind = (name: string): string | undefined => fileTypes.get(name) ?? reg.kind[name]
+  const typeKind = (name: string): string | undefined =>
+    fileTypes.get(name) ?? reg.kind[name] ?? (VERSE_BUILTIN_STRUCTS.has(name) ? 'struct' : undefined)
   // class/interface → the class colour; struct/enum → the distinct lighter type colour
   const typeSpan = (name: string, kind: string): string =>
     kind === 'class' || kind === 'interface'

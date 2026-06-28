@@ -59,10 +59,10 @@ export const VERSE_SPECIFIERS: VerseKw[] = [
   { name: 'persistable', group: 'decl', doc: '게임을 꺼도 저장되어 남을 수 있는 타입입니다. 보통 final과 함께 사용합니다.' },
   { name: 'persistent', group: 'decl', doc: '게임을 꺼도 저장되어 남는 데이터입니다. 보통 final과 함께 사용합니다.' },
   { name: 'localizes', group: 'decl', doc: '여러 언어로 번역되는 글자나 메시지를 만듭니다.' },
-  { name: 'uht_comparable', group: 'decl', internal: true },
+  { name: 'uht_comparable', group: 'decl', internal: true, doc: 'UnrealHeaderTool(UHT)에서 비교 가능한 타입으로 다루도록 표시하는 엔진 내부 지정자입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.' },
   { name: 'scoped', group: 'access', doc: '어느 범위에서 사용할 수 있는지 직접 지정하는 세밀한 접근 지정자입니다. 정해진 단계 대신 허용 범위를 명시적으로 지정합니다.' },
-  { name: 'module_scoped_var_weak_map_key', group: 'decl', internal: true },
-  { name: 'mesh_part_field', group: 'decl', internal: true }
+  { name: 'module_scoped_var_weak_map_key', group: 'decl', internal: true, doc: '`weak_map`의 키로 쓰이는 모듈 범위 변수를 표시하는 엔진 내부 지정자입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.' },
+  { name: 'mesh_part_field', group: 'decl', internal: true, doc: '메시 파트와 연결되는 필드를 표시하는 엔진 내부 지정자입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.' }
 ]
 
 // @attributes — metadata annotations on the line above a definition. Conservative, glossary-backed
@@ -72,7 +72,12 @@ export const VERSE_ATTRIBUTES: VerseKw[] = [
   { name: 'doc', group: 'attr', arg: true, doc: '심볼에 설명 글을 답니다.' },
   { name: 'available', group: 'attr', doc: '어느 버전부터 사용할 수 있는지 표시합니다.' },
   { name: 'deprecated', group: 'attr', doc: '더 이상 권장하지 않는 기능입니다. 앞으로 제거될 수 있으니 대체 기능으로 옮기는 것이 좋습니다.' },
-  { name: 'experimental', group: 'attr', doc: '아직 실험 단계라 나중에 바뀔 수 있습니다.' }
+  { name: 'experimental', group: 'attr', doc: '아직 실험 단계라 나중에 바뀔 수 있습니다.' },
+  // 엔진/컴파일러 내장 속성 — 주로 엔진 API 정의에 나타나고 일반 코드에서 직접 쓸 일이 없어 완성
+  // 목록에선 빼지만(internal), 호버 카드의 설명에는 쓰인다. 본문 글로서리(main/lsp/verse.ts)와 맞춤.
+  { name: 'import_as', group: 'attr', internal: true, doc: '이 심볼을 원래 어느 경로·이름으로 가져왔는지 기록하는 엔진 내부 속성입니다. 주로 엔진 API 정의에 나타나며, 일반 코드에서 직접 쓸 일은 거의 없습니다.' },
+  { name: 'vm_no_effect_token', group: 'attr', internal: true, doc: '가상 머신(VM)이 이 함수를 이펙트 토큰 전달 없이 호출하도록 표시하는 엔진 내부 속성입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.' },
+  { name: 'rtfm_always_open', group: 'attr', internal: true, doc: '생성되는 Verse API 문서에서 이 항목을 항상 펼친 상태로 보이게 하는 엔진 내부 문서화 속성입니다.' }
 ]
 
 // Just the names, in declaration order — verseLang.ts joins these into its `<…>` specifier regex.

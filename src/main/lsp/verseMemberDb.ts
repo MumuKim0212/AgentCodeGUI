@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import type { LspCompletionItem, LspPos, VerseRegistry } from '../../shared/protocol'
 import { VERSE_BUILTIN_KIND } from '../../shared/protocol'
 import { verseWorkspaceFolders } from './verse'
+import { translateVerseDoc } from './verseDocKo'
 
 /* ============================================================
  * Verse member completion DB — the gap verse-lsp leaves open.
@@ -40,6 +41,7 @@ interface VType {
   kind: string // class | struct | enum | interface
   supers: string[]
   members: VMember[]
+  doc?: string // the `#`/`@doc(...)` comment immediately above the declaration
 }
 
 const indentOf = (line: string): number => {
@@ -81,17 +83,35 @@ const FN_HEADER = /^([A-Za-z_]\w*)(?:<[^>]*>)*\s*\(([^]*?)\)(?:<[^>]*>)*\s*:[^=]
 export function parseVerseTypes(types: Map<string, VType>, text: string): void {
   const lines = text.split(/\r?\n/)
   const stack: { indent: number; name: string; kind: string }[] = []
+  // doc 주석 버퍼 — 선언 바로 위의 연속된 `#` 줄 / `@doc("…")`를 모았다가 타입 선언에 붙인다.
+  // 빈 줄이나 일반 코드 줄을 만나면 비운다(선언에 "바로 붙은" 주석만 doc로 인정).
+  let docBuf: string[] = []
   for (const raw of lines) {
     const t = raw.trim()
-    if (
-      !t ||
-      t.startsWith('#') ||
-      t.startsWith('@') ||
-      t.startsWith('<#') ||
-      t.startsWith('using') ||
-      t.startsWith('import')
-    )
+    if (!t) {
+      docBuf = []
       continue
+    }
+    // doc 주석 — extractVerseDoc(verse.ts)와 똑같은 형식으로 모은다. 한국어 번역 팩은 sha1(원문)으로
+    // 찾으므로 형식이 1바이트라도 어긋나면 번역을 못 찾는다: `# …`(앞 #/공백 제거) · 한 줄 `<# … #>` ·
+    // `@doc("…")`(이스케이프 해제). 그 밖의 @속성은 건너뛰고 위쪽 주석을 유지한다.
+    if (t.startsWith('#') && !t.startsWith('#>')) {
+      docBuf.push(t.replace(/^#+\s?/, ''))
+      continue
+    }
+    if (t.startsWith('<#') && t.endsWith('#>')) {
+      docBuf.push(t.slice(2, -2).trim())
+      continue
+    }
+    if (t.startsWith('@')) {
+      const dm = /^@doc\s*\(\s*"((?:[^"\\]|\\.)*)"\s*\)/.exec(t)
+      if (dm) docBuf.push(dm[1].replace(/\\(.)/g, '$1'))
+      continue
+    }
+    if (t.startsWith('<#') || t.startsWith('using') || t.startsWith('import')) {
+      docBuf = [] // 여러 줄 블록 주석 시작 등 — 비운다
+      continue
+    }
     const ind = indentOf(raw)
     while (stack.length && ind <= stack[stack.length - 1].indent) stack.pop()
     const parent = stack[stack.length - 1]
@@ -100,15 +120,19 @@ export function parseVerseTypes(types: Map<string, VType>, text: string): void {
       const name = decl[1]
       const kind = decl[2]
       const supers = (decl[4] || '').split(',').map(baseType).filter(Boolean)
+      const doc = docBuf.join('\n').trim() || undefined
+      docBuf = []
       const existing = types.get(name)
-      if (!existing) types.set(name, { kind, supers, members: [] })
+      if (!existing) types.set(name, { kind, supers, members: [], doc })
       else {
         existing.kind = kind
         if (supers.length) existing.supers = [...new Set([...existing.supers, ...supers])]
+        if (doc && !existing.doc) existing.doc = doc
       }
       stack.push({ indent: ind, name, kind })
       continue
     }
+    docBuf = [] // 일반 코드 줄(멤버 등) — 다음 선언의 doc로 새지 않게 비운다
     if (!parent) continue
     if (ind !== parent.indent + 1) continue // DIRECT members only — skip method-body statements
     const pt = types.get(parent.name)
@@ -539,11 +563,13 @@ export function verseRegistry(root: string): VerseRegistry {
     cached = buildCache(root)
     cache.set(key, cached)
   }
-  const reg: VerseRegistry = { kind: {}, supers: {}, members: {}, methods: {}, enumValues: {}, setters: {} }
+  const reg: VerseRegistry = { kind: {}, supers: {}, members: {}, methods: {}, enumValues: {}, setters: {}, docs: {} }
   for (const map of [cached.digest, cached.project]) {
     for (const [name, t] of map) {
       reg.kind[name] = t.kind as VerseRegistry['kind'][string]
       if (t.supers.length) reg.supers[name] = t.supers
+      // 한국어 보기가 켜져 있으면 번역(팩에 있으면)으로 — 메인 호버 문서와 동일하게. 끄면/없으면 원문.
+      if (t.doc) reg.docs[name] = translateVerseDoc(t.doc)
       // colouring is cross-file (other files / inherited), where private members aren't visible — so
       // the registry's member list stays public-only (same-class private colouring is the renderer's
       // own live scan). Enum values are never private.

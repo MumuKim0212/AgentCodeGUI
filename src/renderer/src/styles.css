@@ -1711,7 +1711,10 @@ input,textarea{ font-family:inherit; }
 .cm-host .cm-editor{ height:100%; }
 .cm-host .cm-editor.cm-focused{ outline:none; }
 /* CM hover 툴팁: CM 기본 크롬(테두리·배경)을 숨기고 .lsp-hover 카드만 보이게.
-   카드 위치는 CM 툴팁이 잡으므로 .lsp-hover의 position:fixed를 static으로 덮는다. */
+   카드 위치는 CM 툴팁이 잡으므로 .lsp-hover의 position:fixed를 static으로 덮는다.
+   주의: 예전엔 투명 패딩+음수 마진으로 "다리"를 만들었는데, CM이 카드 위치를 잴 때 그 패딩까지
+   포함해서 — 패딩만큼 카드가 토큰에서 떨어져 버렸다(딱 안 붙음). 그래서 패딩 다리는 제거하고
+   카드가 토큰에 바로 붙게 둔다. 들어가기 쉬움은 아래 cmHoverKeepAlive(유예 시간)로 처리한다. */
 .cm-tooltip.cm-tooltip-hover{ background:transparent !important; border:none !important; }
 .cm-tooltip .cm-lsp-hover{ position:static; }
 
@@ -1929,6 +1932,8 @@ input,textarea{ font-family:inherit; }
 .lsp-hover .lh-kind.k-member{ color:var(--code-member); background:color-mix(in oklab, var(--code-member) 14%, transparent); }
 .lsp-hover .lh-kind.k-var{ color:var(--code-num); background:color-mix(in oklab, var(--code-num) 14%, transparent); }
 .lsp-hover .lh-kind.k-param{ color:var(--code-str); background:color-mix(in oklab, var(--code-str) 16%, transparent); }
+/* @attribute 칩 — 코드 본문의 어트리뷰트 색(코랄)과 동일하게, struct 칩(연보라)과 겹치지 않도록 */
+.lsp-hover .lh-kind.k-attr{ color:var(--verse-attr, var(--code-meta)); background:color-mix(in oklab, var(--verse-attr, var(--code-meta)) 16%, transparent); }
 /* 메모리 정보 알약 (size·align·offset) — 작은 라벨 + 굵은 모노 값, 줄 아래 전폭 밑줄 */
 .lsp-hover .lh-fact{ display:inline-flex; align-items:baseline; gap:6px; padding:3px 10px;
   border-radius:99px; background:color-mix(in oklab, var(--text-3) 10%, transparent); }
@@ -1954,6 +1959,24 @@ input,textarea{ font-family:inherit; }
   color:var(--text-3); background:color-mix(in oklab, var(--text-3) 13%, transparent);
   padding:2.5px 8px; border-radius:99px; justify-self:start; flex:0 0 auto; white-space:nowrap; }
 .lsp-hover .lh-spec-v{ min-width:0; display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
+/* Verse 지정자/속성 토큰 — 한 줄에 가로로 흐르고(넘치면 줄바꿈), 토큰마다 native title 설명 */
+.lsp-hover .lh-spec-toks{ display:flex; flex-wrap:wrap; align-items:baseline; gap:3px 8px; min-width:0; }
+.lsp-hover .lh-spec-tok{ display:inline-flex; }
+.lsp-hover .lh-spec-tok p{ margin:0; }
+/* 카드 머리(종류 칩)·스펙 그리드(NAME·ACCESS·TYPE·CLASS…)는 기본 화살표 커서로 — 호버 설명은
+   뜨지만 ?(help)나 I빔(text) 대신 보통 모양으로 통일한다. (data-tip만 달고 전역 .has-tip는 안 씀) */
+.lsp-hover .lh-kindrow, .lsp-hover .lh-spec{ cursor:default; }
+/* 카드 본문 래퍼 — 카드(.lsp-hover)의 행 레이아웃을 그대로 받고, 토큰 호버 이벤트를 위임받는다 */
+.lsp-hover .lh-body{ display:flex; flex-direction:column; gap:9px; align-items:stretch; min-width:0; }
+/* 토큰 설명 — 카드 밖(아래/위)에 한 곳에 떠서 글자만 바뀐다. 앱 디자인 카드, pointer-events:none이라
+   호버 흐름을 방해하지 않고, 토큰마다 새로 마운트되지 않아(요소 유지) 깜빡임이 없다. */
+.lh-tokdesc{ position:fixed; z-index:2147483600; transform:translateX(-50%);
+  max-width:344px; max-height:44vh; overflow:hidden; padding:9px 13px; border-radius:11px;
+  background:var(--surface-2); border:1px solid var(--line-2);
+  box-shadow:0 16px 36px -16px rgba(0,0,0,.55), 0 2px 9px -4px rgba(0,0,0,.32);
+  color:var(--text-2); font-size:12.5px; line-height:1.55; font-weight:450;
+  pointer-events:none; white-space:pre-wrap; word-break:keep-all;
+  animation:fade .1s ease both; }
 /* 매개변수 줄 = 코드 + 문서 설명(@param) — 인라인 흐름이라 설명이 항상 코드
    옆에서 시작하고, 길면 통째로 떨어지는 대신 글자 단위로 다음 줄에 이어진다 */
 .lsp-hover .lh-pline{ display:block; min-width:0; line-height:1.6; }

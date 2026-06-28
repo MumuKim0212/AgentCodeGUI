@@ -40,7 +40,12 @@ const KEYWORDS = [
   'ref', 'alias', 'in', 'is', 'with', 'until', 'catch', 'of', 'at', 'over', 'next', 'yield',
   'int', 'float', 'string', 'logic', 'void', 'char', 'char32', 'char8',
   'rational', 'any', 'comparable', 'tuple', 'array', 'map', 'weak_map', 'type', 'subtype',
-  'generator', 'message', 'vector3', 'vector2', 'rotation', 'transform', 'color'
+  'generator', 'message'
+  // NOTE: `vector3`/`vector2`/`rotation`/`transform`/`color` are NOT keywords — they're std-lib
+  // STRUCTS (/Verse.org/SpatialMath, …), so they must read in the struct colour, not keyword-blue.
+  // Kept OUT of KEYWORDS so they fall through to the VARIABLE rule → recolorVerse promotes them to
+  // the struct colour from the registry (with a built-in fallback in verseMembers for the no-digest
+  // case). Only genuine primitives (int/float/…) stay here, coloured like a class as Rider does.
 ]
 const LITERALS = ['true', 'false']
 const BUILT_INS = ['external']

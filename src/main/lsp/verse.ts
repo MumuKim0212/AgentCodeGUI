@@ -265,6 +265,10 @@ const VERSE_GLOSSARY: Record<string, string> = {
   persistable: '게임을 꺼도 저장되어 남을 수 있는 타입입니다. 보통 `<final>` 과 함께 사용합니다.',
   persistent: '게임을 꺼도 저장되어 남는 데이터입니다. 보통 `<final>` 과 함께 사용합니다.',
   localizes: '여러 언어로 번역되는 글자나 메시지를 만듭니다.',
+  // 엔진 내부 지정자 — 엔진 API 정의/네이티브 선언에만 나오고 일반 코드에서 직접 쓸 일이 거의 없다.
+  uht_comparable: 'UnrealHeaderTool(UHT)에서 비교 가능한 타입으로 다루도록 표시하는 엔진 내부 지정자입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.',
+  module_scoped_var_weak_map_key: '`weak_map` 의 키로 쓰이는 모듈 범위 변수를 표시하는 엔진 내부 지정자입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.',
+  mesh_part_field: '메시 파트와 연결되는 필드를 표시하는 엔진 내부 지정자입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.',
   // 특수 이름
   super: '부모 클래스를 가리킵니다.',
   Self: '지금 이 클래스 자신을 가리킵니다.',
@@ -274,7 +278,11 @@ const VERSE_GLOSSARY: Record<string, string> = {
   available: '어느 버전부터 사용할 수 있는지 표시합니다.',
   deprecated: '더 이상 권장하지 않는 기능입니다. 앞으로 제거될 수 있으니 대체 기능으로 옮기는 것이 좋습니다.',
   experimental: '아직 실험 단계라 나중에 바뀔 수 있습니다.',
-  // 속성을 "정의"할 때 붙이는 메타 속성 — `@editable` 같은 속성의 정의 위에 달린다. 다이제스트에
+  // 엔진/컴파일러 내장 속성 — 주로 엔진 API 정의에 나타나며 일반 코드에서 직접 쓸 일은 거의 없다.
+  import_as: '이 심볼을 원래 어느 경로·이름으로 가져왔는지 기록하는 엔진 내부 속성입니다. 주로 엔진 API 정의에 나타나며, 일반 코드에서 직접 쓸 일은 거의 없습니다.',
+  vm_no_effect_token: '가상 머신(VM)이 이 함수를 이펙트 토큰 전달 없이 호출하도록 표시하는 엔진 내부 속성입니다. 일반 코드에서 직접 쓸 일은 거의 없습니다.',
+  rtfm_always_open: '생성되는 Verse API 문서에서 이 항목을 항상 펼친 상태로 보이게 하는 엔진 내부 문서화 속성입니다.',
+  // 속성을 "정의"할 때 붙이는 메타 속성 — `@editable` 같은 속성의 정의 위에 달린다. 엔진 API 정의엔
   // 문서 주석이 없어 직접 설명한다(엔진/컴파일러 내장이라 일반 코드에서 새로 만들 일은 거의 없다).
   attribscope_class: '정의 중인 속성을 클래스 멤버에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
   attribscope_struct: '정의 중인 속성을 구조체 멤버에 붙일 수 있게 허용하는 적용 범위 표시입니다.',
@@ -300,9 +308,38 @@ export async function verseKeywordDoc(absFile: string, line: number, col: number
     return null
   }
   if (!raw) return null
+  // `@attribute` (@editable, @doc, @editable_slider …). verse-lsp gives these a MISLEADING hover —
+  // it resolves the DECORATED declaration that follows, so the card reads the wrong symbol
+  // (`Type`/`var`/the host class). Answer first, with a proper 'attribute' card, when the caret is
+  // on the '@' OR anywhere in the name. Only for KNOWN attributes (glossary + the @editable_* family)
+  // so a custom user attribute still falls through to verse-lsp's real definition.
+  const attr = attrAt(raw, col)
+  if (attr) {
+    // Object.hasOwn: keep 'toString'/'constructor' (Object.prototype keys) from matching as attrs.
+    const desc = Object.hasOwn(VERSE_GLOSSARY, attr)
+      ? VERSE_GLOSSARY[attr]
+      : attr.startsWith('editable_')
+        ? VERSE_GLOSSARY.editable
+        : undefined
+    if (desc) return `### attribute \`${attr}\`\n\n${desc}`
+  }
   const word = wordAt(raw, col)
   // Object.hasOwn: 'constructor'·'toString' 같은 Object.prototype 키를 설명으로 잘못 잡지 않게
   return word && Object.hasOwn(VERSE_GLOSSARY, word) ? VERSE_GLOSSARY[word] : null
+}
+
+// The `@attribute` name when the caret is on an attribute token — on the '@' itself (name follows)
+// or anywhere inside the name (the word's start is immediately preceded by '@'). Else null.
+function attrAt(line: string, col: number): string | null {
+  if (line[col] === '@') {
+    const m = /^@([A-Za-z_]\w*)/.exec(line.slice(col))
+    return m ? m[1] : null
+  }
+  const w = wordAt(line, col)
+  if (!w) return null
+  let a = col
+  while (a > 0 && /[A-Za-z0-9_]/.test(line[a - 1])) a--
+  return line[a - 1] === '@' ? w : null
 }
 
 // `?` 는 Verse의 옵션 연산자로 위치에 따라 의미가 셋이다 — verse-lsp는 호버를 안 주고 `wordAt`도
@@ -461,7 +498,7 @@ export async function verseDeclHover(absFile: string, line: number, col: number,
     }
   }
   // ③ var / 필드: [var|set]<specs> Name<specs>:type [= value]   (':='는 ①에서 처리)
-  //    다이제스트는 `var<private> Name<native><public>:type`처럼 바인딩 키워드에 지정자가
+  //    엔진 API 정의는 `var<private> Name<native><public>:type`처럼 바인딩 키워드에 지정자가
   //    붙는다 — parseVerseSig는 `var `(공백)만 바인딩으로 읽으므로 키워드만 떼어 출력한다.
   if (!sig && !s.includes(':=')) {
     m = /^((?:var|set)(?:<[^>]*>)*\s+)?([A-Za-z_]\w*)((?:<[^>]*>)*)\s*:\s*([^=]+?)(?:\s*=\s*.*)?$/.exec(s)

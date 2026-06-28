@@ -4,7 +4,7 @@ import type { VerseRegistry } from '@shared/protocol'
 // project and merged here (engine digests are shared across projects; user-type collisions are rare).
 // recolorVerse / verseScopes read it SYNCHRONOUSLY; it's populated async on file open, and a version
 // bump notifies open editors to re-decorate the one time it arrives.
-let reg: VerseRegistry = { kind: {}, supers: {}, members: {}, methods: {}, enumValues: {}, setters: {} }
+let reg: VerseRegistry = { kind: {}, supers: {}, members: {}, methods: {}, enumValues: {}, setters: {}, docs: {} }
 let version = 0
 const fetched = new Set<string>()
 const listeners = new Set<() => void>()
@@ -34,7 +34,8 @@ export async function ensureVerseRegistry(cwd: string, relPath: string): Promise
     members: { ...reg.members, ...r.members },
     methods: { ...reg.methods, ...r.methods },
     enumValues: { ...reg.enumValues, ...r.enumValues },
-    setters: { ...reg.setters, ...r.setters }
+    setters: { ...reg.setters, ...r.setters },
+    docs: { ...reg.docs, ...r.docs }
   }
   version++
   for (const fn of listeners) fn()

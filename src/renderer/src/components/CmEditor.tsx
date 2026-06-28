@@ -9,6 +9,7 @@ import {
   keymap,
   hoverTooltip,
   tooltips,
+  ViewPlugin,
   Decoration,
   type DecorationSet
 } from '@codemirror/view'
@@ -160,7 +161,7 @@ const VERSE_SPEC_OPTS: Completion[] = VERSE_SPECIFIERS.filter((s) => !s.internal
 })
 // 라벨/삽입은 '@' 없이(이미 친 '@' 다음부터 치환하므로 — verseComplete의 from 참고). 코랄 at-sign
 // 아이콘이 @속성임을 알리니 라벨에 '@'를 또 붙이지 않는다(<지정자>가 '<' 없이 보이는 것과 동일).
-const VERSE_AT_OPTS: Completion[] = VERSE_ATTRIBUTES.map((a) => {
+const VERSE_AT_OPTS: Completion[] = VERSE_ATTRIBUTES.filter((a) => !a.internal).map((a) => {
   const base: Completion = { label: a.name, type: 'attribute', detail: a.arg ? '("…")' : undefined, info: a.doc }
   return a.arg ? snippetCompletion(`${a.name}("\${}")`, base) : { ...base, apply: a.name }
 })
@@ -314,6 +315,40 @@ const baseTheme = EditorView.theme(
     '.cm-activeLine, .cm-activeLineGutter': { backgroundColor: 'transparent' }
   },
   { dark: true }
+)
+
+// 호버 카드 유예(keep-alive). CM은 포인터가 토큰 밖으로 나가는 mousemove에서 곧장 카드를 닫는다
+// (@codemirror/view HoverPlugin). 카드가 토큰에 붙어 떠도 그 사이를 건너가다 닫혀 카드 안으로 못
+// 들어가던 문제 → 포인터가 카드 둘레 ±HOVER_KEEP_PX 안에 있으면 캡처 단계에서 CM의 mousemove(close)
+// 핸들러로 이벤트가 가기 전에 막아(stopImmediatePropagation) 카드를 유지한다. 카드까지 닿으면 그때부턴
+// CM이 알아서 유지(포인터가 카드 위)하고, 멀어지면 막지 않으니 평소대로 닫힌다. (예전의 패딩 "다리"는
+// CM이 패딩까지 크기로 재 카드가 토큰에서 떨어지는 역효과가 있어 폐기.) 카드가 토큰에 바로 붙으므로
+// 좁은 띠(아래 px)면 충분하고, 큰 카드에서 편집 영역 전체를 막지 않는다.
+const HOVER_KEEP_PX = 22
+const cmHoverKeepAlive = ViewPlugin.fromClass(
+  class {
+    view: EditorView
+    onMove: (e: MouseEvent) => void
+    constructor(view: EditorView) {
+      this.view = view
+      this.onMove = (e: MouseEvent): void => {
+        const tip = document.querySelector('.cm-tooltip-hover') as HTMLElement | null
+        if (!tip) return
+        const r = tip.getBoundingClientRect()
+        if (
+          e.clientX >= r.left - HOVER_KEEP_PX &&
+          e.clientX <= r.right + HOVER_KEEP_PX &&
+          e.clientY >= r.top - HOVER_KEEP_PX &&
+          e.clientY <= r.bottom + HOVER_KEEP_PX
+        )
+          e.stopImmediatePropagation()
+      }
+      view.dom.addEventListener('mousemove', this.onMove, true)
+    }
+    destroy(): void {
+      this.view.dom.removeEventListener('mousemove', this.onMove, true)
+    }
+  }
 )
 
 // A CodeMirror-backed code surface: the viewer's exact colors (hljs decorations +
@@ -615,6 +650,7 @@ export const CmEditor = forwardRef<
           diffCompartment.current.of(ro0 && marksRef.current ? readDiffField(parent0, lang) : []),
           baseTheme,
           lspHover,
+          cmHoverKeepAlive, // 호버 카드가 토큰↔카드 사이를 건너가다 닫히지 않게 유예
           tooltips({ parent: document.body }),
           EditorView.domEventHandlers({
             mousemove: (e) => {

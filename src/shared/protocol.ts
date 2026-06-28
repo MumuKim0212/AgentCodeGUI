@@ -211,6 +211,7 @@ export interface VerseRegistry {
   methods: Record<string, string[]> // type name → its method names (subset of members) — coloured as functions
   enumValues: Record<string, string[]> // enum name → its value names (subset of members)
   setters: Record<string, Record<string, string>> // type → member → SETTER (write) access, when explicit
+  docs: Record<string, string> // type name → its doc comment (`#`/`@doc`) — shown when hovering the type in a card
 }
 
 // ── Terminal (Bash tool) ─────────────────────────────────────
