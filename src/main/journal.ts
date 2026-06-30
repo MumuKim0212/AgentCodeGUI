@@ -6,6 +6,7 @@ import type {
   RunRequest,
   ChangedFile,
   FileDiff,
+  DiffLine,
   JournalCategory,
   JournalEntryMeta,
   JournalEntry
@@ -58,6 +59,11 @@ export class JournalRecorder {
   observe(key: string, e: EngineEvent): void {
     switch (e.type) {
       case 'session': {
+        // 이전 run이 result 없이 또 새 session을 내면(빠른 연속 run 경계) 누적분을 버린다.
+        // — 한 엔진=한 run이라 정상 흐름은 result로 닫히지만, 큐가 겹치는 케이스 방어.
+        if (this.active.has(key)) {
+          console.warn('[journal] 이전 run이 result 없이 새 session으로 교체됨 — 누적분 폐기:', key)
+        }
         const req = this.pending.get(key)
         this.pending.delete(key)
         this.active.set(key, {
@@ -72,12 +78,14 @@ export class JournalRecorder {
       }
       case 'file-change': {
         const rec = this.active.get(key)
-        if (rec) mergeDiff(rec.files, e.file, e.diff, e.whole)
+        // runId가 다르면 다른 run의 이벤트가 섞인 것 — 무시(엉뚱한 run에 diff 누적 방지).
+        if (rec && rec.runId === e.runId) mergeDiff(rec.files, e.file, e.diff, e.whole)
         break
       }
       case 'result': {
         const rec = this.active.get(key)
         if (!rec) break
+        if (rec.runId !== e.runId) break // 다른 run의 result — 현재 active를 닫지 않음
         this.active.delete(key)
         const root = projectJournalRoot(rec.cwd)
         const config = root ? readConfig(root) : DEFAULT_RUNTIME_CONFIG
@@ -195,25 +203,49 @@ const BASE_RULES: Record<JournalCategory, RegExp> = {
   feature: /추가|신설|구현|기능|만들|작성|feature|implement|support|\badd\b|introduce/i
 }
 
-function classify(prompt: string, files: Map<string, FileDiff>, config: RuntimeConfig): JournalCategory {
-  // 의도(프롬프트)만 본다 — 모델 요약문엔 '정리/수정/추가' 같은 일반어가 흔해
+export function classify(prompt: string, files: Map<string, FileDiff>, config: RuntimeConfig): JournalCategory {
+  // 1순위: 의도(프롬프트) 키워드. 모델 요약문엔 '정리/수정/추가' 같은 일반어가 흔해
   // 신호로 쓰면 오분류를 부른다(요약의 "정리한 문서" → refactor 오인 등).
   for (const category of RULE_ORDER) {
     if (BASE_RULES[category].test(prompt)) return category
     const extra = config.extraKeywords[category]
     if (extra && extra.some((kw) => prompt.toLowerCase().includes(kw.toLowerCase()))) return category
   }
-  // 신호 없으면: 새 파일만 있으면 feature, 그 외 chore
-  let onlyNew = files.size > 0
-  for (const d of files.values()) if (d.tag !== 'new') onlyNew = false
-  return onlyNew ? 'feature' : 'chore'
+  // 2순위: 프롬프트에 신호가 없을 때 변경 파일 종류로 추정.
+  const paths = [...files.keys()]
+  if (paths.length > 0) {
+    // 바뀐 게 전부 문서/설정류면 chore (코드 변경이 하나도 없을 때만).
+    if (paths.every(isDocOrConfigPath)) return 'chore'
+    // 새 파일만 있으면(전부 신규) feature.
+    let onlyNew = true
+    for (const d of files.values()) if (d.tag !== 'new') onlyNew = false
+    if (onlyNew) return 'feature'
+  }
+  // 그 외(기존 코드 수정인데 단서 없음) → chore로 보수적 분류. 빗나가면 사용자가 정정.
+  return 'chore'
 }
 
-function deriveTitle(prompt: string, category: JournalCategory): string {
-  const first = prompt
+/** 문서·설정 파일 경로인지(확장자/파일명 기준). 코드 변경 없는 chore 판정에 쓴다. */
+export function isDocOrConfigPath(p: string): boolean {
+  const lower = p.toLowerCase()
+  const base = lower.split(/[\\/]/).pop() ?? lower
+  if (/\.(md|mdx|markdown|txt|rst|adoc)$/.test(lower)) return true
+  if (/\.(json|ya?ml|toml|ini|cfg|conf|env|lock|editorconfig|gitignore|gitattributes)$/.test(lower))
+    return true
+  // 확장자 없는 흔한 설정/문서 파일들
+  return /^(readme|license|licence|changelog|contributing|authors|notice|dockerfile|makefile|\.gitignore|\.npmrc|\.nvmrc|\.prettierrc|\.eslintrc)$/.test(
+    base
+  )
+}
+
+export function deriveTitle(prompt: string, category: JournalCategory): string {
+  const nonEmpty = prompt
     .split('\n')
     .map((l) => l.trim())
-    .find((l) => l.length > 0)
+    .filter((l) => l.length > 0)
+  // 슬래시 명령(/run, /plan …)만 있는 줄은 의도가 아니므로 건너뛰고 실제 요청 줄을 찾는다.
+  // 단, 그게 전부면 명령 자체라도 제목으로 쓴다(빈 제목보다 낫다).
+  const first = nonEmpty.find((l) => !/^\/[a-z][\w-]*(\s|$)/i.test(l)) ?? nonEmpty[0]
   if (!first) return CATEGORY_LABEL[category]
   return first.length > 70 ? `${first.slice(0, 69)}…` : first
 }
@@ -275,29 +307,59 @@ function renderEntry(
   ].join('\n')
 }
 
-/** FileDiff[] → 표준 unified diff 텍스트. Obsidian/사람이 읽기 좋게. */
-function serializeDiffs(files: Map<string, FileDiff>): string {
+/** FileDiff[] → 표준 unified diff 텍스트. Obsidian/사람이 읽기 좋고, git apply도 통하게.
+ *
+ * 엔진 DiffLine은 줄 번호를 안 들고 다닌다(ctx/add/del/hunk 태그뿐). 그래서 줄을
+ * 순서대로 훑으며 직접 카운트해 **올바른 `@@ -old,n +new,m @@` 헤더**를 재구성한다.
+ * 엔진이 끼워 넣은 서술형 hunk 라인(`@@ 새 파일 … @@`)은 헤더 계산에서 무시한다.
+ */
+export function serializeDiffs(files: Map<string, FileDiff>): string {
   const blocks: string[] = []
   for (const d of [...files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
-    const head = [`diff --git a/${d.path} b/${d.path}`, `--- a/${d.path}`, `+++ b/${d.path}`]
-    const body = d.lines.map((ln) => {
-      if (ln.t === 'add') return `+${ln.text}`
-      if (ln.t === 'del') return `-${ln.text}`
-      if (ln.t === 'hunk') return ln.text.startsWith('@@') ? ln.text : `@@ ${ln.text} @@`
-      return ` ${ln.text}`
-    })
-    blocks.push([...head, ...body].join('\n'))
+    const isNew = d.tag === 'new'
+    // 신규 파일은 `new file mode` + `index 000…` 메타가 있어야 git이 /dev/null을
+    // 진짜 "없는 파일"로 해석한다(없으면 'dev/null' 경로로 오인해 apply 실패).
+    const head = [`diff --git a/${d.path} b/${d.path}`]
+    if (isNew) head.push('new file mode 100644', 'index 0000000..0000000')
+    head.push(isNew ? `--- /dev/null` : `--- a/${d.path}`, `+++ b/${d.path}`)
+    blocks.push([...head, ...hunkBody(d.lines)].join('\n'))
   }
   return blocks.join('\n\n') + '\n'
 }
 
+/** DiffLine[] → 줄 번호가 정확한 unified hunk 텍스트. 엔진 hunk 라인은 경계로만 쓴다. */
+function hunkBody(lines: DiffLine[]): string[] {
+  // 파일 전체가 한 덩어리로 오므로 단일 hunk로 본다(1부터 시작).
+  let oldCount = 0
+  let newCount = 0
+  const body: string[] = []
+  for (const ln of lines) {
+    if (ln.t === 'hunk') continue // 서술형 라벨 — 우리가 헤더를 새로 만든다
+    if (ln.t === 'add') {
+      body.push(`+${ln.text}`)
+      newCount++
+    } else if (ln.t === 'del') {
+      body.push(`-${ln.text}`)
+      oldCount++
+    } else {
+      body.push(` ${ln.text}`)
+      oldCount++
+      newCount++
+    }
+  }
+  if (body.length === 0) return []
+  const oldStart = oldCount === 0 ? 0 : 1
+  const newStart = newCount === 0 ? 0 : 1
+  return [`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...body]
+}
+
 // ── config.md (앱이 읽는 규칙) ────────────────────────────────
-interface RuntimeConfig {
+export interface RuntimeConfig {
   recordAllTurns: boolean
   extraKeywords: Partial<Record<JournalCategory, string[]>>
 }
 
-const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = { recordAllTurns: false, extraKeywords: {} }
+export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = { recordAllTurns: false, extraKeywords: {} }
 
 function ensureConfig(root: string): void {
   const p = path.join(root, 'config.md')
