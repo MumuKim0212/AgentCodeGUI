@@ -56,12 +56,84 @@ export async function listProjectFiles(cwd: string): Promise<string[]> {
 }
 
 /**
+ * Build a fast "is this entry name excluded?" predicate from VS Code-style files.exclude
+ * globs (UEFN's `.code-workspace` uses e.g. "**\/*.uasset", "Collections"). We match the
+ * entry's *basename*: enough for the UEFN patterns (suffix globs + bare folder names), and
+ * we treat a bare name as "exclude anywhere" so the junk folders vanish at any depth.
+ */
+function makeExcluder(patterns: string[]): (name: string) => boolean {
+  const exact = new Set<string>()
+  const regexes: RegExp[] = []
+  for (const raw of patterns) {
+    let p = (raw || '').trim()
+    if (p.startsWith('**/')) p = p.slice(3)
+    if (p.includes('/')) p = p.slice(p.lastIndexOf('/') + 1) // basename only
+    if (!p) continue
+    if (p.includes('*') || p.includes('?')) {
+      const re = '^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$'
+      try {
+        regexes.push(new RegExp(re, 'i'))
+      } catch {
+        /* skip an unparseable glob */
+      }
+    } else {
+      exact.add(p.toLowerCase())
+    }
+  }
+  return (name: string): boolean => {
+    if (exact.has(name.toLowerCase())) return true
+    for (const re of regexes) if (re.test(name)) return true
+    return false
+  }
+}
+
+/**
+ * Does `abs` (a directory) hold at least one non-excluded *file* anywhere below it? Used to
+ * hide directories that are empty once the excludes are applied (UEFN's "Hide Empty
+ * Directories"). Bounded by depth + a shared node budget so an all-asset subtree can't stall
+ * the expand; on hitting the budget we assume "yes" — safer to reveal than to wrongly hide.
+ */
+async function dirHasVisibleFile(
+  abs: string,
+  excl: (n: string) => boolean,
+  depth: number,
+  budget: { n: number }
+): Promise<boolean> {
+  if (depth < 0 || budget.n <= 0) return true
+  let entries: fs.Dirent[]
+  try {
+    entries = await fs.promises.readdir(abs, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  const subdirs: string[] = []
+  for (const e of entries) {
+    if (excl(e.name)) continue
+    if (e.isFile()) return true
+    if (e.isDirectory()) subdirs.push(path.join(abs, e.name))
+    if (--budget.n <= 0) return true
+  }
+  for (const d of subdirs) {
+    if (await dirHasVisibleFile(d, excl, depth - 1, budget)) return true
+    if (budget.n <= 0) return true
+  }
+  return false
+}
+
+/**
  * List ONE folder for the file explorer — `rel` is cwd-relative ('' = project root).
- * Lazy by design (called per expanded folder), so unlike the bounded mention walk
- * above nothing is filtered: an explorer shows the real tree, node_modules included.
+ * Lazy by design (called per expanded folder). By default nothing is filtered — the explorer
+ * shows the real tree, node_modules included. When `exclude` globs are given (the explorer's
+ * "Verse 위주로 보기"), entries matching them are dropped, and with `hideEmpty` directories
+ * left empty by those excludes are dropped too — mirroring UEFN's Verse Explorer view.
  * Folders first, then files, each sorted case-insensitively.
  */
-export async function listDir(cwd: string, rel: string): Promise<DirEntry[]> {
+export async function listDir(
+  cwd: string,
+  rel: string,
+  exclude?: string[],
+  hideEmpty?: boolean
+): Promise<DirEntry[]> {
   if (!cwd) return []
   const root = path.resolve(cwd)
   const abs = path.resolve(root, rel || '.')
@@ -73,7 +145,22 @@ export async function listDir(cwd: string, rel: string): Promise<DirEntry[]> {
   } catch {
     return [] // unreadable dir (perms, gone) — show it empty
   }
-  const out: DirEntry[] = entries.map((e) => ({ name: e.name, dir: e.isDirectory() }))
+  let out: DirEntry[] = entries.map((e) => ({ name: e.name, dir: e.isDirectory() }))
+  const excl = exclude && exclude.length ? makeExcluder(exclude) : null
+  if (excl) {
+    out = out.filter((e) => !excl(e.name))
+    if (hideEmpty) {
+      const kept: DirEntry[] = []
+      for (const e of out) {
+        if (!e.dir) {
+          kept.push(e)
+          continue
+        }
+        if (await dirHasVisibleFile(path.join(abs, e.name), excl, 6, { n: 4000 })) kept.push(e)
+      }
+      out = kept
+    }
+  }
   out.sort((a, b) =>
     a.dir === b.dir ? a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) : a.dir ? -1 : 1
   )

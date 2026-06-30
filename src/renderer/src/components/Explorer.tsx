@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom'
 import type { ChangedFile, DirEntry } from '@shared/protocol'
 import { FileBadge } from './fileType'
 import { getPref, setPref } from '../lib/prefs'
-import { IconBook, IconChevLeft, IconChevRight, IconFolder, IconFolderOpen, IconGitBranch, IconPlus, IconSearch, IconX2 } from './icons'
+import { IconBook, IconChevLeft, IconChevRight, IconFile, IconFilter, IconFolder, IconFolderOpen, IconGitBranch, IconPencil, IconPlus, IconRefresh, IconSearch, IconTrash, IconVerse, IconX2 } from './icons'
+import { FileOpModal, type FileOp } from './FileOpModal'
+import { NoticeModal } from './NoticeModal'
 
 const isMac = typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac')
 
@@ -15,6 +17,22 @@ function expandedKey(cwd: string): string {
 // 참고 폴더 목록의 저장 키 — 메인 작업 폴더별로 따로 기억한다
 function refsKey(cwd: string): string {
   return 'explorer.refs:' + cwd.replace(/[\\/]+/g, '/').toLowerCase()
+}
+
+// "Verse API" 묶음 펼침 여부의 저장 키 — 프로젝트별로 기억(기본 접힘)
+function verseOpenKey(cwd: string): string {
+  return 'explorer.verseOpen:' + cwd.replace(/[\\/]+/g, '/').toLowerCase()
+}
+
+// "Verse 위주로 보기"(에셋·정크 숨김) 토글의 저장 키 — 프로젝트별, Verse 프로젝트는 기본 ON
+function verseFilterKey(cwd: string): string {
+  return 'explorer.verseFilter:' + cwd.replace(/[\\/]+/g, '/').toLowerCase()
+}
+
+// 지금 보고 있는 폴더(메인='' 또는 Verse API·참고 폴더 경로)의 저장 키 — 프로젝트별로 기억해
+// 앱을 껐다 켜거나 같은 채팅을 다시 열어도 보던 폴더(예: /Verse.org)로 복원한다
+function viewKey(cwd: string): string {
+  return 'explorer.view:' + cwd.replace(/[\\/]+/g, '/').toLowerCase()
 }
 
 /**
@@ -60,24 +78,97 @@ export const Explorer = memo(function Explorer({
   // 전환/폴더 변경) 렌더 중에 같이 갈아끼워, stale한 루트로 트리를 한 번 더 읽는
   // 깜빡임이 없게 한다.
   const [refs, setRefs] = useState<string[]>(() => (cwd ? getPref<string[]>(refsKey(cwd), []) : []))
-  const [view, setView] = useState('')
+  // Verse 프로젝트면 자동으로 채워지는 보기 전용 API digest 루트(Verse.org/Fortnite.com/…).
+  // 수동 참고 폴더(refs)와 달리 영속하지 않고 — 매번 .vproject에서 다시 발견한다.
+  const [verseRefs, setVerseRefs] = useState<{ path: string; name: string }[]>([])
+  // "Verse API" 묶음 접힘/펼침 — 프로젝트별로 기억(기본 접힘). 클러터를 줄이는 게 목적이라
+  // 처음엔 한 줄로만 보이고, 한 번 펼치면 그 프로젝트에선 그대로 유지된다.
+  const [verseOpen, setVerseOpen] = useState<boolean>(() => (cwd ? getPref<boolean>(verseOpenKey(cwd), false) : false))
+  // "Verse 위주로 보기" — UEFN .code-workspace의 files.exclude 글롭 + 빈 폴더 숨김으로 에셋/정크를
+  // 가린다. excludes가 비면(=Verse 프로젝트 아님) 토글 자체를 숨긴다. 기본 ON, 프로젝트별 영속.
+  const [excludes, setExcludes] = useState<string[]>([])
+  const [verseFilter, setVerseFilter] = useState<boolean>(() => (cwd ? getPref<boolean>(verseFilterKey(cwd), true) : true))
+  // 지금 보고 있는 폴더 — 프로젝트별로 영속(껐다 켜도 보던 Verse API/참고 폴더로 복원). '' = 메인.
+  const [view, setView] = useState<string>(() => (cwd ? getPref<string>(viewKey(cwd), '') : ''))
   const [prevCwd, setPrevCwd] = useState(cwd)
   if (prevCwd !== cwd) {
     setPrevCwd(cwd)
     setRefs(cwd ? getPref<string[]>(refsKey(cwd), []) : [])
-    setView('')
+    setVerseRefs([])
+    setExcludes([])
+    setVerseOpen(cwd ? getPref<boolean>(verseOpenKey(cwd), false) : false)
+    setVerseFilter(cwd ? getPref<boolean>(verseFilterKey(cwd), true) : true)
+    setView(cwd ? getPref<string>(viewKey(cwd), '') : '')
   }
-  const viewing = view && refs.includes(view) ? view : '' // '' = 메인 폴더 보기
+  // 실제로 필터를 거는 조건 — 토글 ON이면서 이 프로젝트에 제외 글롭이 있을 때만
+  const filtering = verseFilter && excludes.length > 0
+  // 수동 참고 폴더에 이미 있는 경로는 자동 digest 행에서 빼 중복을 막는다
+  const autoRefs = verseRefs.filter((v) => !refs.some((r) => samePath(r, v.path)))
+  const viewing = view && (refs.includes(view) || autoRefs.some((v) => v.path === view)) ? view : '' // '' = 메인 폴더 보기
   const root = viewing || cwd // 지금 트리가 보여주는 폴더
 
   // rel path('' = root) → that folder's entries; only loaded (visited) folders exist here
   const [entries, setEntries] = useState<Map<string, DirEntry[]>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const refreshRef = useRef<HTMLButtonElement>(null) // 새로고침 아이콘 1회전 애니메이션 대상
+  // 우클릭 컨텍스트 메뉴 + 파일 작업 카드(이름 변경·새 파일/폴더·삭제). root=true면 빈 영역
+  // 우클릭(프로젝트 루트에 만들기)이다.
+  const [ctx, setCtx] = useState<{ x: number; y: number; rel: string; name: string; dir: boolean; root?: boolean } | null>(null)
+  const [fileOp, setFileOp] = useState<FileOp | null>(null)
+  const ctxRef = useRef<HTMLDivElement>(null)
+  // 드래그 앤 드롭 이동 — dragRel: 끌고 있는 항목, dropRel: 들어갈 대상 폴더('' = 루트)
+  const [dragRel, setDragRel] = useState<string | null>(null)
+  const [dropRel, setDropRel] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ title: string; message: string } | null>(null) // 알림 카드
   // 참고 폴더도 미리 데워 둔다(메인은 App에서 prewarm) — 첫 파일 열 때 빠르게.
   // 심볼 분석 진행 표시는 코드창(파일별 "심볼 분석 중 %")으로 옮겼다 — 폴더 배지 없음.
   useEffect(() => {
     refs.forEach((d) => window.api.lsp.prewarm(d).catch(() => {}))
   }, [refs])
+
+  // 보고 있는 폴더가 바뀔 때마다 프로젝트별로 저장 — 모든 setView 경로(메인/참고/Verse API 클릭,
+  // 참고 폴더 추가·삭제)를 한곳에서 영속한다. cwd 전환 시엔 위에서 그 프로젝트의 저장값으로
+  // 막 복원했으므로 같은 값을 다시 쓰는 무해한 no-op이 된다.
+  useEffect(() => {
+    if (cwd) setPref(viewKey(cwd), view)
+  }, [cwd, view])
+
+  // Verse 프로젝트면 .vproject의 패키지(내 Verse 소스 + Verse.org/Fortnite.com/… digest)를
+  // 발견해 보기 전용 루트로 자동 노출 — UEFN이 VS Code에 그리는 그룹 뷰와 같은 모습.
+  // refreshKey도 의존 → 에이전트 턴이 .vproject를 처음 생성하면 그때 자동으로 나타난다.
+  useEffect(() => {
+    if (!cwd) {
+      setVerseRefs([])
+      setExcludes([])
+      return
+    }
+    let alive = true
+    Promise.all([window.api.lsp.verseDigests(cwd), window.api.lsp.verseExcludes(cwd)])
+      .then(([digs, ex]) => {
+        if (!alive) return
+        setVerseRefs(digs || [])
+        setExcludes(ex || [])
+      })
+      .catch(() => {
+        if (!alive) return
+        setVerseRefs([])
+        setExcludes([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [cwd, refreshKey])
+
+  // 필터를 켜고/끄거나(또는 excludes가 처음 도착하면) 화면에 떠 있는 것(root + 펼친 폴더)을
+  // 조용히 다시 읽는다 — 펼침/선택 상태는 그대로 두고 내용만 필터 반영. 검색 인덱스도 무효화.
+  const filterSig = filtering ? excludes.join('|') : ''
+  useEffect(() => {
+    if (!root) return
+    loadDir('')
+    expanded.forEach((rel) => loadDir(rel))
+    setAllFiles(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterSig])
   const [sel, setSel] = useState<string | null>(null)
   // 파일 이름 검색 — 트리와 같은 자리에서 평면 결과로 전환. 파일 목록(@멘션과 같은
   // 워커)은 첫 검색에 한 번만 받아오고, cwd/refreshKey가 바뀌면 무효화한다.
@@ -107,7 +198,7 @@ export const Explorer = memo(function Explorer({
     if (!root) return
     const gen = genRef.current
     window.api
-      .listDir(root, rel)
+      .listDir(root, rel, filtering ? excludes : undefined, filtering)
       .then((list) => {
         if (gen !== genRef.current) return // a different folder took over meanwhile
         setEntries((m) => {
@@ -127,6 +218,10 @@ export const Explorer = memo(function Explorer({
     setSel(null)
     setQuery('')
     setAllFiles(null)
+    setCtx(null)
+    setFileOp(null)
+    setDragRel(null)
+    setDropRel(null)
     const saved = root ? new Set(getPref<string[]>(expandedKey(root), [])) : new Set<string>()
     setExpanded(saved)
     if (root) {
@@ -205,13 +300,11 @@ export const Explorer = memo(function Explorer({
     if (!cwd) return
     const p = await window.api.pickDirectory()
     if (!p) return
-    const same = (a: string, b: string): boolean =>
-      a.replace(/[\\/]+/g, '/').toLowerCase() === b.replace(/[\\/]+/g, '/').toLowerCase()
-    if (same(p, cwd)) {
+    if (samePath(p, cwd)) {
       setView('')
       return
     }
-    const dup = refs.find((r) => same(r, p))
+    const dup = refs.find((r) => samePath(r, p))
     if (dup) {
       setView(dup)
       return
@@ -227,6 +320,187 @@ export const Explorer = memo(function Explorer({
     setRefs(next)
     setPref(refsKey(cwd), next)
     if (view === r) setView('')
+  }
+
+  // "Verse API" 묶음 접기/펴기 — 상태를 프로젝트별로 영속
+  const toggleVerse = (): void => {
+    const next = !verseOpen
+    setVerseOpen(next)
+    if (cwd) setPref(verseOpenKey(cwd), next)
+  }
+
+  // "Verse 위주로 보기" 켜기/끄기 — 트리는 filterSig 변화로 자동 재로드
+  const toggleFilter = (): void => {
+    const next = !verseFilter
+    setVerseFilter(next)
+    if (cwd) setPref(verseFilterKey(cwd), next)
+  }
+
+  // 수동 새로고침 — 지금 보고 있는 폴더(루트 + 펼쳐둔 하위 폴더)를 다시 읽는다. 검색 인덱스도
+  // 버려 다음 검색이 최신 파일을 본다. 펼침·선택 상태는 그대로. (턴 종료 자동 갱신과 같은 동작)
+  const refresh = (): void => {
+    if (!root) return
+    loadDir('')
+    expanded.forEach((rel) => loadDir(rel))
+    setAllFiles(null)
+    // WAAPI로 매 클릭마다 깔끔히 한 바퀴 — CSS 클래스 토글과 달리 연속 클릭에도 항상 재시작
+    refreshRef.current
+      ?.querySelector('svg')
+      ?.animate?.([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], {
+        duration: 500,
+        easing: 'ease-in-out'
+      })
+  }
+
+  // ── 우클릭 컨텍스트 메뉴 + 파일 작업 카드 ────────────────────────────────
+  const openCtx = (ev: React.MouseEvent, rel: string, name: string, dir: boolean): void => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    setCtx({ x: ev.clientX, y: ev.clientY, rel, name, dir })
+  }
+  // 트리 빈 영역 우클릭 → 프로젝트 루트에 새 파일/폴더 (행은 stopPropagation이라 여기 안 옴)
+  const openCtxRoot = (ev: React.MouseEvent): void => {
+    if (!root) return
+    ev.preventDefault()
+    setCtx({ x: ev.clientX, y: ev.clientY, rel: '', name: rootLabel, dir: true, root: true })
+  }
+  const doReveal = (): void => {
+    if (!ctx) return
+    void window.api.revealPath(root, ctx.rel)
+    setCtx(null)
+  }
+  const startCreate = (kind: 'newFile' | 'newFolder'): void => {
+    if (!ctx) return
+    let parentRel: string
+    let parentLabel: string
+    if (ctx.root || ctx.dir) {
+      parentRel = ctx.rel
+      parentLabel = ctx.root ? rootLabel : ctx.name
+    } else {
+      parentRel = ctx.rel.includes('/') ? ctx.rel.slice(0, ctx.rel.lastIndexOf('/')) : ''
+      parentLabel = parentRel ? parentRel.slice(parentRel.lastIndexOf('/') + 1) : rootLabel
+    }
+    setCtx(null)
+    setFileOp({ kind, parentRel, parentLabel })
+  }
+  // 카드의 확정 — 종류별로 실제 동작 후 트리/검색 갱신. {ok,error}를 그대로 카드에 돌려준다.
+  const runFileOp = async (op: FileOp, value: string): Promise<{ ok: boolean; error?: string }> => {
+    const reloadParentOf = (rel: string): void => {
+      loadDir(rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
+      setAllFiles(null)
+    }
+    if (op.kind === 'rename') {
+      const r = await window.api.renamePath(root, op.rel, value)
+      if (r.ok) {
+        reloadParentOf(op.rel)
+        if (sel === op.rel) setSel(null)
+      }
+      return r
+    }
+    if (op.kind === 'delete') {
+      const r = await window.api.deletePath(root, op.rel)
+      if (r.ok) {
+        reloadParentOf(op.rel)
+        if (sel === op.rel) setSel(null)
+      }
+      return r
+    }
+    // newFile / newFolder
+    if (/[\\/]/.test(value) || value === '.' || value === '..') return { ok: false, error: '이름에 / 나 \\ 는 쓸 수 없어요' }
+    const childRel = op.parentRel ? op.parentRel + '/' + value : value
+    const r = await window.api.createPath(root, childRel, op.kind === 'newFolder')
+    if (r.ok) {
+      if (op.parentRel) {
+        setExpanded((prev) => {
+          const n = new Set(prev)
+          n.add(op.parentRel)
+          if (root) setPref(expandedKey(root), Array.from(n).slice(0, 300))
+          return n
+        })
+      }
+      loadDir(op.parentRel)
+      setAllFiles(null)
+    }
+    return r
+  }
+
+  // ── 드래그 앤 드롭 이동 ──────────────────────────────────────────────────
+  // dest 폴더('' = 루트)로 src를 옮길 수 있나 — 자기 자신/자기 하위/이미 그 안이면 불가
+  const canDropInto = (src: string, destFolderRel: string): boolean => {
+    if (!src || src === destFolderRel) return false
+    if (destFolderRel && destFolderRel.startsWith(src + '/')) return false // 자기 하위로 못 감
+    const parent = src.includes('/') ? src.slice(0, src.lastIndexOf('/')) : ''
+    if (parent === destFolderRel) return false // 이미 그 폴더 안에 있음
+    return true
+  }
+  const onDragStartRow = (e: React.DragEvent, rel: string): void => {
+    e.stopPropagation()
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', rel)
+    setDragRel(rel)
+  }
+  const onDragEndRow = (): void => {
+    setDragRel(null)
+    setDropRel(null)
+  }
+  const onDragOverFolder = (e: React.DragEvent, folderRel: string): void => {
+    e.stopPropagation()
+    if (!dragRel || !canDropInto(dragRel, folderRel)) {
+      setDropRel(null)
+      return
+    }
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropRel(folderRel)
+  }
+  const onDropFolder = (e: React.DragEvent, folderRel: string): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    const src = dragRel
+    setDropRel(null)
+    setDragRel(null)
+    if (src) doMove(src, folderRel)
+  }
+  // 파일 위로 드래그: 드롭 대상이 아님(루트 하이라이트도 끔)
+  const onDragOverFile = (e: React.DragEvent): void => {
+    e.stopPropagation()
+    setDropRel(null)
+  }
+  const onDragOverRoot = (e: React.DragEvent): void => {
+    if (!dragRel || !canDropInto(dragRel, '')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDropRel('')
+  }
+  const onDropRoot = (e: React.DragEvent): void => {
+    e.preventDefault()
+    const src = dragRel
+    setDropRel(null)
+    setDragRel(null)
+    if (src) doMove(src, '')
+  }
+  const doMove = (src: string, destFolderRel: string): void => {
+    if (!canDropInto(src, destFolderRel)) return
+    const name = src.slice(src.lastIndexOf('/') + 1)
+    const destRel = destFolderRel ? destFolderRel + '/' + name : name
+    void window.api.movePath(root, src, destRel).then((r) => {
+      if (!r.ok) {
+        setNotice({ title: '옮길 수 없어요', message: r.error || '옮길 수 없어요' })
+        return
+      }
+      loadDir(src.includes('/') ? src.slice(0, src.lastIndexOf('/')) : '') // 옛 부모
+      loadDir(destFolderRel) // 새 부모
+      setAllFiles(null)
+      if (destFolderRel) {
+        setExpanded((prev) => {
+          const n = new Set(prev)
+          n.add(destFolderRel)
+          if (root) setPref(expandedKey(root), Array.from(n).slice(0, 300))
+          return n
+        })
+      }
+      if (sel === src) setSel(null)
+    })
   }
 
   // Ctrl/⌘+F → 탐색기 검색으로 점프 (접혀 있으면 펼친 다음 포커스).
@@ -261,18 +535,36 @@ export const Explorer = memo(function Explorer({
     }
   }, [open])
 
-  // 접힘: 펼치기 버튼 하나만 남는 좁은 레일
-  if (!open) {
-    return (
-      <div className="explorer-rail">
-        <button className="exp-rail-btn has-tip" data-tip="탐색기 열기" aria-label="탐색기 열기" onClick={onToggle}>
-          <IconChevRight size={14} />
-        </button>
-      </div>
-    )
-  }
+  // 컨텍스트 메뉴 닫기 — 바깥 클릭 / Esc / 스크롤 / 리사이즈 (메뉴 내부 클릭은 ref로 보호)
+  useEffect(() => {
+    if (!ctx) return
+    const close = (): void => setCtx(null)
+    const onDown = (e: MouseEvent): void => {
+      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) close()
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') close()
+    }
+    const aside = asideRef.current
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('resize', close)
+    document.addEventListener('keydown', onKey)
+    aside?.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('resize', close)
+      document.removeEventListener('keydown', onKey)
+      aside?.removeEventListener('scroll', close, true)
+    }
+  }, [ctx])
+
+  // 접힘: 잔여 레일 없이 완전히 사라진다 — 칼럼이 깔끔하게 닫힌다. 다시 열기는
+  // 채팅 헤더 좌상단의 토글 버튼(단축키 몰라도 클릭) 또는 Ctrl/⌘+F.
+  if (!open) return null
 
   const project = basename(cwd)
+  // 지금 보고 있는 뷰의 표시 이름 — 메인은 프로젝트명, Verse API/참고 폴더는 그 폴더명(예: /Verse.org)
+  const rootLabel = viewing ? autoRefs.find((v) => v.path === viewing)?.name ?? basename(viewing) : project
 
   const renderRows = (base: string, depth: number): React.ReactNode => {
     const list = entries.get(base)
@@ -297,7 +589,19 @@ export const Explorer = memo(function Explorer({
         const dot = chg.dirs.get(rel)
         return (
           <Fragment key={rel}>
-            <button className="exp-row" style={{ paddingLeft: indent(depth) }} onClick={() => toggleDir(rel)}>
+            <button
+              className={
+                'exp-row' + (dragRel === rel ? ' dragging' : '') + (dropRel === rel ? ' drop-into' : '')
+              }
+              style={{ paddingLeft: indent(depth) }}
+              onClick={() => toggleDir(rel)}
+              onContextMenu={(ev) => openCtx(ev, rel, e.name, true)}
+              draggable
+              onDragStart={(ev) => onDragStartRow(ev, rel)}
+              onDragEnd={onDragEndRow}
+              onDragOver={(ev) => onDragOverFolder(ev, rel)}
+              onDrop={(ev) => onDropFolder(ev, rel)}
+            >
               <span className={'exp-tw' + (isOpen ? ' open' : '')}>
                 <IconChevRight size={11} />
               </span>
@@ -313,10 +617,17 @@ export const Explorer = memo(function Explorer({
       return (
         <button
           key={rel}
-          className={'exp-row has-tip' + (sel === rel ? ' sel' : '') + (tag ? ' chg-' + tag : '')}
+          className={
+            'exp-row has-tip' + (sel === rel ? ' sel' : '') + (tag ? ' chg-' + tag : '') + (dragRel === rel ? ' dragging' : '')
+          }
           data-tip={tag ? rel + (tag === 'new' ? ' · 새 파일 — 클릭하면 diff' : ' · 수정됨 — 클릭하면 diff') : rel}
           style={{ paddingLeft: indent(depth) + 15 }}
           onClick={() => openFile(rel)}
+          onContextMenu={(ev) => openCtx(ev, rel, e.name, false)}
+          draggable
+          onDragStart={(ev) => onDragStartRow(ev, rel)}
+          onDragEnd={onDragEndRow}
+          onDragOver={onDragOverFile}
         >
           <span className="exp-fbadge">
             <FileBadge path={e.name} size={15} />
@@ -330,10 +641,77 @@ export const Explorer = memo(function Explorer({
 
   return (
     <aside className="explorer" ref={asideRef}>
-      <ScrollTip rootRef={asideRef} />
+      <ScrollTip rootRef={asideRef} suppressed={!!ctx} />
+      {ctx &&
+        createPortal(
+          <div
+            ref={ctxRef}
+            className="ctx-menu"
+            style={{
+              left: Math.min(ctx.x, window.innerWidth - 210),
+              top: Math.min(ctx.y, window.innerHeight - 210)
+            }}
+          >
+            {/* 새 파일/폴더는 폴더 또는 빈 영역(루트)에서만 — 파일 우클릭엔 안 뜬다 */}
+            {(ctx.dir || ctx.root) && (
+              <>
+                <button className="ctx-item" onClick={() => startCreate('newFile')}>
+                  <IconFile size={15} /> 새 파일
+                </button>
+                <button className="ctx-item" onClick={() => startCreate('newFolder')}>
+                  <IconFolder size={15} /> 새 폴더
+                </button>
+                <div className="ctx-sep" />
+              </>
+            )}
+            {!ctx.root && (
+              <button
+                className="ctx-item"
+                onClick={() => {
+                  setFileOp({ kind: 'rename', rel: ctx.rel, name: ctx.name, dir: ctx.dir })
+                  setCtx(null)
+                }}
+              >
+                <IconPencil size={15} /> 이름 변경
+              </button>
+            )}
+            <button className="ctx-item" onClick={doReveal}>
+              <IconFolderOpen size={15} /> 파일 탐색기에서 보기
+            </button>
+            {!ctx.root && (
+              <>
+                <div className="ctx-sep" />
+                <button
+                  className="ctx-item danger"
+                  onClick={() => {
+                    setFileOp({ kind: 'delete', rel: ctx.rel, name: ctx.name, dir: ctx.dir })
+                    setCtx(null)
+                  }}
+                >
+                  <IconTrash size={15} /> 삭제
+                </button>
+              </>
+            )}
+          </div>,
+          document.body
+        )}
+      {fileOp && (
+        <FileOpModal op={fileOp} onSubmit={(v) => runFileOp(fileOp, v)} onClose={() => setFileOp(null)} />
+      )}
+      {notice && <NoticeModal title={notice.title} message={notice.message} onClose={() => setNotice(null)} />}
       <div className="exp-head">
         <span className="exp-title">탐색기</span>
-        {/* 수동 새로고침은 제거 — 턴이 끝날 때마다 자동 갱신된다. 그 자리에 Git 카드 진입 */}
+        {/* 수동 새로고침 — 턴 종료 자동 갱신과 별개로, 외부에서 바뀐 파일을 지금 바로 반영 */}
+        <button
+          ref={refreshRef}
+          className="exp-act has-tip"
+          data-tip="새로고침 — 지금 보는 폴더 다시 읽기"
+          aria-label="새로고침"
+          onClick={refresh}
+          disabled={!cwd}
+        >
+          <IconRefresh size={14} />
+        </button>
         <button
           className="exp-act git has-tip"
           data-tip={gitReady ? 'Git — 커밋 히스토리·변경 사항' : 'Git 저장소가 아니에요'}
@@ -368,7 +746,7 @@ export const Explorer = memo(function Explorer({
             >
               <IconFolder className="f-ic" size={14} />
               <span className="f-name">{project}</span>
-              {refs.length > 0 ? (
+              {refs.length > 0 || autoRefs.length > 0 ? (
                 <span className="f-main-chip">메인</span>
               ) : (
                 <span className="kbd">{isMac ? '⌘O' : 'Ctrl O'}</span>
@@ -396,6 +774,47 @@ export const Explorer = memo(function Explorer({
                 </span>
               </button>
             ))}
+            {autoRefs.length > 0 && (
+              <>
+                <button
+                  className={'exp-frow verse vparent has-tip' + (verseOpen ? ' open' : '')}
+                  data-tip={`Verse API · ${autoRefs.length}개 패키지 (읽기 전용)`}
+                  aria-expanded={verseOpen}
+                  onClick={toggleVerse}
+                >
+                  <IconVerse className="f-ic" size={14} />
+                  <span className="f-name">Verse API</span>
+                  {excludes.length > 0 && (
+                    <span
+                      className={'v-filter has-tip' + (verseFilter ? ' on' : '')}
+                      role="button"
+                      aria-label="Verse 위주로 보기"
+                      aria-pressed={verseFilter}
+                      data-tip={verseFilter ? 'Verse 위주로 보기 — 켜짐 (클릭하면 모든 파일)' : '모든 파일 보임 (클릭하면 Verse 위주로)'}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleFilter()
+                      }}
+                    >
+                      <IconFilter size={12} />
+                    </span>
+                  )}
+                  <span className="f-vcount">{autoRefs.length}</span>
+                </button>
+                {verseOpen &&
+                  autoRefs.map((v) => (
+                    <button
+                      key={'verse:' + v.path}
+                      className={'exp-vchild has-tip' + (viewing === v.path ? ' active' : '')}
+                      data-tip={v.name}
+                      onClick={() => setView(v.path)}
+                    >
+                      <IconVerse className="f-ic" size={13} />
+                      <span className="f-name">{v.name}</span>
+                    </button>
+                  ))}
+              </>
+            )}
             <button className="exp-fadd" onClick={addRef}>
               <IconPlus size={11} /> 폴더 추가
             </button>
@@ -455,7 +874,14 @@ export const Explorer = memo(function Explorer({
               )}
             </div>
           ) : (
-            <div className="exp-tree scroll">{renderRows('', 0)}</div>
+            <div
+              className={'exp-tree scroll' + (dropRel === '' && dragRel ? ' drop-root' : '')}
+              onContextMenu={openCtxRoot}
+              onDragOver={onDragOverRoot}
+              onDrop={onDropRoot}
+            >
+              {renderRows('', 0)}
+            </div>
           )}
         </>
       ) : (
@@ -486,12 +912,23 @@ function basename(p: string): string {
   return parts.length ? parts[parts.length - 1] : p
 }
 
+// 경로 동치 비교 — 슬래시 방향·중복·대소문자 무시 (Windows 경로 섞임 대응)
+function samePath(a: string, b: string): boolean {
+  return a.replace(/[\\/]+/g, '/').toLowerCase() === b.replace(/[\\/]+/g, '/').toLowerCase()
+}
+
 // 트리/폴더 행 툴팁 — CSS ::after 툴팁은 스크롤 컨테이너(.exp-tree, overflow)에서 잘려 안 보인다.
 // 그래서 그 두 영역의 [data-tip]은 여기서 body로 포털한 fixed 툴팁으로 띄운다(클리핑 탈출).
 // (CSS 쪽은 .exp-tree/.exp-folders 의 ::after 를 끄고, exp-head 등 다른 곳은 그대로 CSS 툴팁 유지.)
-function ScrollTip({ rootRef }: { rootRef: { current: HTMLElement | null } }) {
+function ScrollTip({ rootRef, suppressed }: { rootRef: { current: HTMLElement | null }; suppressed?: boolean }) {
   const [tip, setTip] = useState<{ text: string; rect: DOMRect } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
+  // 컨텍스트 메뉴가 열려 있는 동안은 툴팁을 띄우지 않는다(우클릭 시 둘이 겹쳐 보이던 버그).
+  const suppressedRef = useRef(false)
+  useEffect(() => {
+    suppressedRef.current = !!suppressed
+    if (suppressed) setTip(null)
+  }, [suppressed])
   useEffect(() => {
     const root = rootRef.current
     if (!root) return
@@ -503,6 +940,7 @@ function ScrollTip({ rootRef }: { rootRef: { current: HTMLElement | null } }) {
       setTip(null)
     }
     const onOver = (e: MouseEvent): void => {
+      if (suppressedRef.current) return
       const el = (e.target as Element).closest?.('[data-tip]')
       if (!el || !el.closest('.exp-tree, .exp-folders')) return
       if (el === cur) return
@@ -512,7 +950,7 @@ function ScrollTip({ rootRef }: { rootRef: { current: HTMLElement | null } }) {
       const text = el.getAttribute('data-tip') || ''
       if (!text) return
       timer = window.setTimeout(() => {
-        if (cur === el) setTip({ text, rect: el.getBoundingClientRect() })
+        if (cur === el && !suppressedRef.current) setTip({ text, rect: el.getBoundingClientRect() })
       }, 300)
     }
     const onOut = (e: MouseEvent): void => {

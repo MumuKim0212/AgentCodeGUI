@@ -8,6 +8,7 @@ import { ClaudeEngine } from './claude/engine'
 import * as engineVersions from './engine/versions'
 import { readProfile, writeProfile } from './profile'
 import { readUiPrefs, writeUiPrefs } from './uiPrefs'
+import { setVerseDocKo } from './lsp/verseDocKo'
 import { readChats, writeChats } from './chats'
 import { readMulti, writeMulti } from './maStore'
 import { JournalRecorder, listJournal, readJournal } from './journal'
@@ -646,9 +647,13 @@ function registerIpc(): void {
   ipcMain.handle(IPC.chatsGet, async () => readChats())
   ipcMain.handle(IPC.chatsSave, async (_e, data: unknown) => writeChats(data))
 
-  // renderer UI prefs (viewer size/zoom, chat zoom), stored in the app home folder
+  // renderer UI prefs (viewer size/zoom, chat zoom, verse doc language), in the app home folder
   ipcMain.handle(IPC.uiPrefsGet, async () => readUiPrefs())
-  ipcMain.handle(IPC.uiPrefsSave, async (_e, prefs: Record<string, unknown>) => writeUiPrefs(prefs))
+  ipcMain.handle(IPC.uiPrefsSave, async (_e, prefs: Record<string, unknown>) => {
+    writeUiPrefs(prefs)
+    setVerseDocKo(prefs?.verseDocLang !== 'en') // Verse hover docs in Korean unless '원문 보기'
+  })
+  setVerseDocKo(readUiPrefs().verseDocLang !== 'en') // apply the saved choice at startup
 
   // skills (SKILL.md capabilities): list global (~/.claude) + project (.claude),
   // and turn them on/off. The on/off choice is applied to runs by the engine.
@@ -668,6 +673,82 @@ function registerIpc(): void {
     const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd, a.relPath)
     await shell.openPath(abs)
   })
+  // Reveal (highlight) a file/folder in the OS file manager — explorer "파일 탐색기에서 보기"
+  ipcMain.handle(IPC.shellRevealPath, async (_e, a: { cwd: string; relPath: string }) => {
+    const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+    shell.showItemInFolder(abs)
+  })
+  // Rename a file/folder within its own parent dir. Rejects path separators / dup names.
+  ipcMain.handle(
+    IPC.fsRename,
+    async (_e, a: { cwd: string; relPath: string; newName: string }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+        const name = (a.newName || '').trim()
+        if (!name || /[\\/]/.test(name) || name === '.' || name === '..') return { ok: false, error: '올바른 이름이 아니에요' }
+        const dest = path.join(path.dirname(abs), name)
+        if (path.resolve(dest) === path.resolve(abs)) return { ok: true } // unchanged
+        if (fs.existsSync(dest)) return { ok: false, error: '같은 이름이 이미 있어요' }
+        await fs.promises.rename(abs, dest)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '이름을 바꿀 수 없어요' }
+      }
+    }
+  )
+  // Move a file/folder to the OS trash (recycle bin) — recoverable, safer than rm
+  ipcMain.handle(
+    IPC.fsDelete,
+    async (_e, a: { cwd: string; relPath: string }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+        await shell.trashItem(abs)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '삭제할 수 없어요' }
+      }
+    }
+  )
+  // Move a file/folder to a new path (drag & drop). Stays within the root, refuses to move a
+  // folder into itself/its descendant, and won't clobber an existing name at the destination.
+  ipcMain.handle(
+    IPC.fsMove,
+    async (_e, a: { cwd: string; srcRel: string; destRel: string }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const root = path.resolve(a.cwd || '')
+        const src = path.resolve(root, a.srcRel)
+        const dest = path.resolve(root, a.destRel)
+        const inside = (p: string): boolean => p === root || p.startsWith(root + path.sep)
+        if (!inside(src) || !inside(dest)) return { ok: false, error: '경로가 프로젝트 밖이에요' }
+        if (src === dest) return { ok: true }
+        if (dest === src || dest.startsWith(src + path.sep)) return { ok: false, error: '폴더를 자기 안으로 옮길 수 없어요' }
+        if (fs.existsSync(dest)) return { ok: false, error: '대상에 같은 이름이 이미 있어요' }
+        await fs.promises.rename(src, dest)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '옮길 수 없어요' }
+      }
+    }
+  )
+  // Create a new empty file or folder. Fails if something with that name already exists.
+  ipcMain.handle(
+    IPC.fsCreate,
+    async (_e, a: { cwd: string; relPath: string; dir: boolean }): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const abs = path.isAbsolute(a.relPath) ? a.relPath : path.join(a.cwd || '', a.relPath)
+        if (fs.existsSync(abs)) return { ok: false, error: '같은 이름이 이미 있어요' }
+        if (a.dir) {
+          await fs.promises.mkdir(abs, { recursive: true })
+        } else {
+          await fs.promises.mkdir(path.dirname(abs), { recursive: true })
+          await fs.promises.writeFile(abs, '', { flag: 'wx' }) // wx: fail if it appeared meanwhile
+        }
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, error: (e as Error)?.message || '만들 수 없어요' }
+      }
+    }
+  )
 
   // Read a file's text for the in-app viewer card. Caps the read so a huge file
   // can't stall the UI, and rejects binaries (a null byte in the head) so the card
@@ -721,7 +802,9 @@ function registerIpc(): void {
   ipcMain.handle(IPC.listFiles, async (_e, cwd: string) => listProjectFiles(cwd || ''))
 
   // One folder's entries for the file explorer — called lazily as folders expand
-  ipcMain.handle(IPC.listDir, async (_e, a: { cwd: string; rel: string }) => listDir(a.cwd || '', a.rel || ''))
+  ipcMain.handle(IPC.listDir, async (_e, a: { cwd: string; rel: string; exclude?: string[]; hideEmpty?: boolean }) =>
+    listDir(a.cwd || '', a.rel || '', a.exclude, a.hideEmpty)
+  )
 
   // LSP code intelligence for the in-app viewer — lazy per-project language servers.
   // Failures degrade to null/[]: the viewer just loses hover/jump, never errors.
@@ -747,11 +830,11 @@ function registerIpc(): void {
   ipcMain.handle(IPC.lspStatus, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.status(a.cwd || '', a.relPath)
   )
-  ipcMain.handle(IPC.lspHover, async (_e, a: { cwd: string; relPath: string; pos: LspPos }) =>
-    lspManager.hover(a.cwd || '', a.relPath, a.pos).catch(() => null)
+  ipcMain.handle(IPC.lspHover, async (_e, a: { cwd: string; relPath: string; pos: LspPos; text?: string }) =>
+    lspManager.hover(a.cwd || '', a.relPath, a.pos, a.text).catch(() => null)
   )
-  ipcMain.handle(IPC.lspDefinition, async (_e, a: { cwd: string; relPath: string; pos: LspPos }) =>
-    lspManager.definition(a.cwd || '', a.relPath, a.pos).catch(() => [])
+  ipcMain.handle(IPC.lspDefinition, async (_e, a: { cwd: string; relPath: string; pos: LspPos; text?: string }) =>
+    lspManager.definition(a.cwd || '', a.relPath, a.pos, a.text).catch(() => [])
   )
   ipcMain.handle(IPC.lspSemanticTokens, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.semanticTokens(a.cwd || '', a.relPath).catch(() => null)
@@ -759,10 +842,37 @@ function registerIpc(): void {
   ipcMain.handle(IPC.lspCachedTokens, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.cachedTokens(a.cwd || '', a.relPath).catch(() => null)
   )
+  ipcMain.handle(IPC.lspCompletion, async (_e, a: { cwd: string; relPath: string; pos: LspPos; text: string }) =>
+    lspManager.completion(a.cwd || '', a.relPath, a.pos, a.text).catch(() => null)
+  )
   ipcMain.handle(IPC.lspPrewarm, async (_e, a: { cwd: string }) => {
     lspManager.prewarm(a.cwd || '')
   })
+  ipcMain.handle(IPC.lspWarm, async (_e, a: { cwd: string; relPath: string }) => {
+    lspManager.warm(a.cwd || '', a.relPath).catch(() => {})
+  })
+  ipcMain.handle(IPC.lspVerseRegistry, async (_e, a: { cwd: string; relPath: string }) => {
+    try {
+      return lspManager.verseRegistry(a.cwd || '', a.relPath)
+    } catch {
+      return null
+    }
+  })
   ipcMain.handle(IPC.lspProjectStatus, async (_e, a: { cwd: string }) => lspManager.projectStatus(a.cwd || ''))
+  ipcMain.handle(IPC.lspVerseDigests, async (_e, a: { cwd: string }) => {
+    try {
+      return lspManager.verseDigestFolders(a.cwd || '')
+    } catch {
+      return []
+    }
+  })
+  ipcMain.handle(IPC.lspVerseExcludes, async (_e, a: { cwd: string }) => {
+    try {
+      return lspManager.verseFileExcludes(a.cwd || '')
+    } catch {
+      return []
+    }
+  })
   ipcMain.handle(IPC.lspInstall, async (_e, a: { cwd: string; relPath: string }) =>
     lspManager.install(a.cwd || '', a.relPath, (p) => send(IPC.lspInstallProgress, p))
   )
@@ -776,6 +886,24 @@ function registerIpc(): void {
       .uninstallServer(id)
       .then(() => ({ ok: true as const }))
       .catch((e) => ({ ok: false as const, error: (e as Error).message || '삭제하지 못했어요' }))
+  )
+  ipcMain.handle(IPC.lspPickVerseServer, async () => {
+    if (!mainWindow) return null
+    const r = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      title: 'Verse 언어 서버 선택 (Verse.vsix 또는 verse-lsp.exe)',
+      filters: [{ name: 'Verse 서버', extensions: ['vsix', 'exe'] }]
+    })
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
+  })
+  ipcMain.handle(IPC.lspSetVersePath, async (_e, p: string) =>
+    lspManager.setVersePath(p || '').catch((e) => ({ ok: false as const, error: (e as Error).message || '설정 실패' }))
+  )
+  ipcMain.handle(IPC.lspClearVersePath, async () =>
+    lspManager
+      .clearVersePath()
+      .then(() => ({ ok: true as const }))
+      .catch((e) => ({ ok: false as const, error: (e as Error).message || '해제하지 못했어요' }))
   )
 
   ipcMain.handle(IPC.winMinimize, async () => mainWindow?.minimize())

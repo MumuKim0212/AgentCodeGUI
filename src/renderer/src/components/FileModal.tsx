@@ -7,7 +7,10 @@ import { highlightCode, highlightToLines } from '../lib/highlight'
 import { SEM_CLASS, riderSemClass, type SemSpan, type StructOv } from '../lib/semTokens'
 import { useCppStructOv } from '../lib/cppStruct'
 import { diffMarksOf, type DiffMarks } from '../lib/cmDiff'
+import { getPref, setPref } from '../lib/prefs'
 import { isImagePath, imageSrc } from '../lib/images'
+import { verseReg } from '../lib/verseRegistry'
+import { VERSE_SPECIFIERS, VERSE_ATTRIBUTES } from '../lib/verseKeywords'
 import { FileBadge, fileTypeFor, paletteClassFor } from './fileType'
 import {
   IconBot,
@@ -18,6 +21,7 @@ import {
   IconClose,
   IconCopy,
   IconMax,
+  IconPencil,
   IconRestore,
   IconSearch,
   IconSend
@@ -214,6 +218,126 @@ function parseCsSig(
   }
 }
 
+// Verse 호버는 한 줄 시그니처를 MarkedString(```verse)로 보낸다. parseCsSig의 Verse판 —
+// '[var] (/모듈/경로:)이름<지정자…>(매개변수)<효과…>:타입' 꼴을 분해해 같은 카드(종류 칩 ·
+// 이름 · specifiers · params · return/type · module 푸터)로 구조화한다. 지정자는 <…>를 살려
+// 돌려줘 카드에서도 본문과 같은 Verse 색(지정자=구조체색)으로 칠해지게 한다.
+function parseVerseSig(
+  sig: string
+): { kind: string; name: string; container: string | null; ret?: string; retLabel?: string; params?: string[]; mods?: string[] } | null {
+  let s = sig.replace(/\s+/g, ' ').trim()
+  const mods: string[] = []
+  // <지정자> 묶음 흡수 — <…> 형태를 보존해 카드에서도 Verse 색(지정자=구조체색)으로 칠한다
+  const eatSpecs = (): void => {
+    let m: RegExpExecArray | null
+    while ((m = /^<([^>]*)>/.exec(s))) {
+      mods.push('<' + m[1] + '>')
+      s = s.slice(m[0].length).trim()
+    }
+  }
+  // 한정자 (/Module/Path:) — 심볼이 속한 모듈/클래스 경로. 흡수하고 경로를 돌려준다.
+  const eatQual = (): string | null => {
+    const q = /^\((\/[^()]*?):\)\s*/.exec(s)
+    if (!q) return null
+    s = s.slice(q[0].length)
+    return q[1]
+  }
+
+  // ① 타입 선언 shape — 종류 키워드가 맨 앞: 'interface (/Verse.org/Verse:)cancelable'.
+  // (class/struct/enum/interface/module은 Verse 예약어라 식별자와 충돌하지 않는다)
+  const tk = /^(class|struct|enum|interface|module)\b\s*/.exec(s)
+  if (tk) {
+    s = s.slice(tk[0].length)
+    const container = eatQual()
+    const nm = /^([A-Za-z_]\w*)/.exec(s)
+    if (!nm) return null
+    s = s.slice(nm[1].length).trim()
+    eatSpecs()
+    // an enum/struct VALUE reference comes as `enum (/path:)Type.Value` — the trailing `.Value` is
+    // the actual symbol; label it '<kind> value' (e.g. 'enum value') of the type `Type`.
+    const dot = /^\.([A-Za-z_]\w*)/.exec(s)
+    if (dot && (tk[1] === 'enum' || tk[1] === 'struct'))
+      return { kind: tk[1] + ' value', name: dot[1], container: nm[1], retLabel: 'type', mods: mods.length ? mods : undefined }
+    return { kind: tk[1], name: nm[1], container, retLabel: 'type', mods: mods.length ? mods : undefined }
+  }
+
+  // ② var / function / field shape: '[var] (/path:)Name<specs>(params)<effects>:type'. verse-lsp
+  // emits the binding keyword in EITHER order relative to the module qualifier — `var (/path:)Name…`
+  // AND `(/path:)var Name…` (the latter is what it sends for a class FIELD) — so strip `var`/`set`
+  // both before and after the qualifier. Handling only the first order made `(/path:)var Name:type`
+  // read the keyword `var` AS the name → the card showed 'Type `var`' instead of 'Variable `Name`'.
+  let bind: string | null = null
+  const eatBind = (): void => {
+    const kw = /^(var|set)\s+/.exec(s)
+    if (kw) {
+      bind = kw[1]
+      s = s.slice(kw[0].length)
+    }
+  }
+  eatBind()
+  const container = eatQual()
+  eatBind()
+  // 이름 — 보통 식별자, 또는 operator 형식(`operator'<기호>'`). verse-lsp는 연산자/점(.) 접근 등을
+  // 이렇게 준다. operator를 안 잡으면 `'…'` 때문에 'operator'에서 멈춰 매개변수도 못 읽고 종류가
+  // 'type'으로 깨졌다(예: Entity.GetLocalTransform → 종류 Type · 이름 operator). 연산자 토큰을 통째로
+  // 이름으로 잡으면 뒤의 (매개변수):반환형이 정상 파싱돼 함수 카드로 뜬다.
+  const opM = /^operator\s*'(?:[^'\\]|\\.)*'/.exec(s)
+  const nm = opM ?? /^([A-Za-z_]\w*)/.exec(s)
+  if (!nm) return null
+  // operator'.Member' (점 멤버 접근) — verse-lsp가 `X.Member` 호출을 이 꼴로 준다(예:
+  // operator'.GetLocalTransform'(InEntity:entity)…). 그땐 ① 멤버명만 이름으로 쓰고(→ GetLocalTransform),
+  // ② 첫 매개변수인 수신자(receiver, 호출 시의 X)는 진짜 매개변수가 아니라 뒤에서 뺀다. 일반
+  // 연산자(operator'+' 등)는 그 토큰을 그대로 이름으로 둔다.
+  const opToken = opM ? opM[0].replace(/\s+/g, '') : null
+  const dotMember = opToken ? /^operator'\.([A-Za-z_]\w*)'$/.exec(opToken) : null
+  const name = dotMember ? dotMember[1] : (opToken ?? nm[1])
+  s = s.slice(nm[0].length).trim()
+  eatSpecs() // 이름 뒤: 접근/선언 지정자
+  // 매개변수 (...) 또는 [...] — `<decides>` 실패형 함수는 verse-lsp가 사용처 호버에서 매개변수
+  // 목록을 대괄호로 준다(호출 구문 `f[]`을 그대로 반영). 둘 다 매개변수 목록으로 받아 함수로
+  // 분류해야 한다 — 안 그러면 `(`가 아니라 `[`로 시작해 params·ret 둘 다 못 잡고 종류가 'type'으로
+  // 깨졌다(예: Entity.GetPlayspaceForEntity[] → 종류 Type). 최상위 쉼표 분리는 splitCsArgs가 처리.
+  let params: string[] | undefined
+  if (s.startsWith('(') || s.startsWith('[')) {
+    const open = s[0]
+    const close = open === '(' ? ')' : ']'
+    let depth = 0
+    let end = -1
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i]
+      if (c === open) depth++
+      else if (c === close && --depth === 0) {
+        end = i
+        break
+      }
+    }
+    if (end > 0) {
+      params = splitCsArgs(s.slice(1, end))
+      s = s.slice(end + 1).trim()
+    }
+  }
+  // 점 멤버 접근(operator'.Member')의 첫 매개변수는 수신자(receiver)이므로 진짜 매개변수에서 뺀다.
+  if (dotMember && params?.length) params = params.slice(1)
+  eatSpecs() // 매개변수 뒤: 효과 지정자 (<transacts><predicts> 등)
+  // 반환형/타입 — 남은 선두 ':'
+  let ret: string | undefined
+  const rt = /^:\s*(.+)$/.exec(s)
+  if (rt) ret = rt[1].trim()
+  // 종류 — Verse는 var(가변)와 비-var(불변)가 근본적으로 다르다: var/set→'var'(가변, 핑크),
+  // 매개변수 있으면 함수, :타입만 있는 비-var 바인딩은 'constant'(불변 상수, 청록), 셋 다 없으면
+  // 타입(키워드 없는 클래스 등). 이렇게 해야 var 변수와 일반 상수/파라미터가 색·라벨로 갈린다.
+  const kind = bind ? 'var' : params ? 'function' : ret ? 'constant' : 'type'
+  return {
+    kind,
+    name,
+    container,
+    ret,
+    retLabel: kind === 'function' ? 'return' : 'type',
+    params,
+    mods: mods.length ? mods : undefined
+  }
+}
+
 function parseHover(md: string): HoverParts | null {
   // Roslyn은 줄바꿈을 CRLF로 보낸다 — 펜스 정규식(```lang\n)이 \r에 막혀 구조화에
   // 실패하고 raw 마크다운으로 떨어지면 카드 디자인이 깨진다. 먼저 LF로 정규화한다.
@@ -254,6 +378,7 @@ function parseHover(md: string): HoverParts | null {
   let params: { v: string; doc?: string }[] = []
   const facts: { k: string; v: string }[] = []
   let from: { k: string; v: string } | null = null
+  const sigMods: string[] = [] // Verse 지정자(parseVerseSig)처럼 시그니처 파서가 끌어낸 한정자
   // 독시젠/문서 태그 — 본문에 '@param x …'로 날 것으로 두지 않고 스펙 행에 합친다
   const paramDocs = new Map<string, string>()
   let returnDoc = ''
@@ -300,19 +425,22 @@ function parseHover(md: string): HoverParts | null {
       docLines.push(t.replace(/^[@\\]brief\s+/, '')) // 태그만 벗기고 본문으로
     } else docLines.push(lines[i])
   }
-  // OmniSharp(C#): 종류 헤더가 없으니 시그니처에서 종류·이름·반환형·매개변수·소속을 끌어낸다
+  // 종류 헤더가 없는 서버(OmniSharp C#, Verse)는 시그니처에서 종류·이름·반환형·매개변수·소속을
+  // 끌어낸다. Verse는 ```verse 펜스라 sigLang으로 구분해 전용 파서를 쓴다.
   if (!kind && sig) {
-    const e = parseCsSig(sig)
+    const isVerse = sigLang === 'verse'
+    const e = isVerse ? parseVerseSig(sig) : parseCsSig(sig)
     if (e) {
       kind = e.kind
       name = e.name
       if (e.ret) metas.unshift({ k: e.retLabel ?? 'type', v: '`' + e.ret + '`' })
-      if (e.value) metas.push({ k: 'value', v: '`' + e.value + '`' }) // const/field 초기값
+      if ('value' in e && e.value) metas.push({ k: 'value', v: '`' + e.value + '`' }) // const/field 초기값
       if (e.params?.length) params = e.params.map((q) => ({ v: '`' + q + '`' }))
+      if ('mods' in e && e.mods?.length) sigMods.push(...e.mods) // Verse 지정자 → access 칩
       if (e.container && !from) {
-        // 타입 선언의 소속은 네임스페이스, 멤버의 소속은 선언 타입 — 라벨을 구분
+        // Verse: 한정자는 모듈/클래스 경로 → 'module'. C#/C++: 타입은 namespace, 멤버는 in.
         const isType = /^(struct|class|interface|enum|delegate|namespace)$/.test(e.kind)
-        from = { k: isType ? 'namespace' : 'in', v: '`' + e.container + '`' }
+        from = { k: isVerse ? 'module' : isType ? 'namespace' : 'in', v: '`' + e.container + '`' }
       }
     }
   }
@@ -333,8 +461,8 @@ function parseHover(md: string): HoverParts | null {
       else metas.push({ k: 'return', v: '', doc: returnDoc }) // void인데 @return만 있는 경우
     }
   }
-  // 한정자 — 시그니처 전문을 치우면 잃기 쉬운 정보(static·const·접근자…)만 칩으로 승격
-  const mods: string[] = []
+  // 한정자 — 시그니처 전문을 치우면 잃기 쉬운 정보(static·const·접근자·Verse 지정자…)만 칩으로 승격
+  const mods: string[] = [...sigMods]
   if (sig) {
     const flat = sig.replace(/\s+/g, ' ')
     const lead =
@@ -359,14 +487,148 @@ function parseHover(md: string): HoverParts | null {
 // 변수는 핑크(--code-num), 파라미터는 탄(--code-str), 그 외 미분류는 앱 액센트.
 function hoverKindClass(kind: string): string {
   const k = kind.toLowerCase()
+  // Verse 지정자/속성 용어집 카드 — 코드에서 <지정자>가 갖는 구조체색 칩으로 통일
+  if (/access|effect|specifier|attribute/.test(k)) return 'k-type2'
   if (/method|function|constructor|destructor|operator/.test(k)) return 'k-fn'
   if (/struct|enum|union|delegate/.test(k)) return 'k-type2'
-  if (/class|interface|namespace|type|concept/.test(k)) return 'k-type'
+  if (/class|interface|namespace|type|concept|module/.test(k)) return 'k-type'
   if (/macro/.test(k)) return 'k-kw'
   if (/field|property|event|const/.test(k)) return 'k-member'
-  if (/variable|local/.test(k)) return 'k-var'
+  if (/variable|local|\bvar\b/.test(k)) return 'k-var'
   if (/param/.test(k)) return 'k-param'
   return 'k-plain'
+}
+
+// Verse 종류 칩 색 — 사용자 선호대로 Constant Variable ↔ Variable 색을 맞바꾸고, enum/struct 값은
+// 그 타입색(연보라)으로. 그 외는 공용 hoverKindClass.
+function verseKindClass(kind: string, display: string | null): string {
+  if (display === 'Enum Value' || display === 'Struct Value') return 'k-type2'
+  if (kind === 'constant') return 'k-var' // (was k-member) ↔ swapped
+  if (kind === 'var') return 'k-member' // (was k-var) ↔ swapped
+  // @attribute → its own coral chip (--verse-attr, same as the code body), NOT the struct colour
+  // (k-type2) — otherwise the attribute chip clashes with struct/enum cards.
+  if (kind === 'attribute') return 'k-attr'
+  return hoverKindClass(kind)
+}
+
+// Verse 지정자(<…>)는 의미가 갈린다 — 접근(가시성)·효과(계산 효과)·그 외 선언 지정자.
+// 카드에서 한 줄로 뭉치지 않고 access · effects · specifiers 세 줄로 나눠 보여 준다.
+const VERSE_ACCESS = new Set(['public', 'private', 'protected', 'internal', 'epic_internal'])
+const VERSE_EFFECT = new Set([
+  'transacts', 'computes', 'reads', 'writes', 'decides', 'varies',
+  'converges', 'suspends', 'no_rollback', 'allocates', 'predicts'
+])
+// Every name that is a genuine `<specifier>` (access · effect · declaration modifier). Built from the
+// SAME list that drives `<…>` completion (verseKeywords), so the two never drift. @attributes
+// (`@editable`, `@import_as`, …) are metadata, NOT specifiers — but verse-lsp folds them into its
+// hover's `<…>` too, so anything folded that ISN'T in this set is an attribute (see splitVerseSpecs).
+const VERSE_KNOWN_SPEC = new Set(VERSE_SPECIFIERS.map((s) => s.name))
+// '<public>' / '<getter(GetX)>' → 'public' / 'getter'
+function verseSpecName(spec: string): string {
+  const m = /^<\s*([A-Za-z_]\w*)/.exec(spec)
+  return m ? m[1] : spec.replace(/[<>]/g, '')
+}
+
+// 호버 카드 안의 토큰(<지정자>·@속성)·종류 칩에 "이게 뭔지" 네이티브 툴팁(title)을 달아 준다 —
+// 코드에서 그 토큰을 직접 호버했을 때 뜨는 글로서리와 같은 설명. 출처는 완성과 동일한
+// verseKeywords(VERSE_SPECIFIERS·VERSE_ATTRIBUTES)라 설명이 한 곳에서만 관리된다.
+const VERSE_TOK_DESC = new Map<string, string>()
+for (const s of [...VERSE_SPECIFIERS, ...VERSE_ATTRIBUTES]) if (s.doc) VERSE_TOK_DESC.set(s.name, s.doc)
+// 토큰(`<override>` / `<getter(GetX)>` / `@editable`)의 설명. @editable_* 계열은 editable로 폴백.
+function verseTokDesc(tok: string): string | undefined {
+  const n = verseSpecName(tok).replace(/^@/, '')
+  return VERSE_TOK_DESC.get(n) ?? (n.startsWith('editable_') ? VERSE_TOK_DESC.get('editable') : undefined)
+}
+// 종류 칩(STRUCT·VARIABLE·ATTRIBUTE…)의 설명 — p.kind(원형) 기준.
+const VERSE_KIND_DESC: Record<string, string> = {
+  class: '객체 타입입니다. 상속·메서드를 가질 수 있고, 담아도 복사되지 않고 원본을 가리킵니다.',
+  struct: '데이터를 묶는 값 타입입니다. 넘기거나 대입할 때 전체가 복사됩니다.',
+  enum: '이름을 붙인 값들을 나열한 목록 타입입니다.',
+  interface: '구현해야 할 메서드들을 정해 둔 약속입니다. 클래스가 이를 구현합니다.',
+  module: '관련 코드를 묶는 단위입니다. 경로(`/My.com/Game`)로 구분됩니다.',
+  var: '값을 바꿀 수 있는 변수입니다. `set` 으로 새 값을 넣습니다.',
+  constant: '한 번 정해지면 바뀌지 않는 값(상수)입니다.',
+  function: '호출하면 동작을 수행하고 값을 돌려줄 수 있는 함수입니다.',
+  attribute: '심볼에 부가 정보를 다는 `@`속성입니다.',
+  type: '타입입니다.'
+}
+function verseKindDesc(kind: string | null): string | undefined {
+  if (!kind) return undefined
+  const k = kind.toLowerCase()
+  if (k.includes('enum value')) return '`enum` 에 나열된 값 중 하나입니다.'
+  if (k.includes('struct value')) return '`struct` 의 멤버 값입니다.'
+  if (k.includes('param')) return '함수에 전달되는 매개변수입니다.'
+  if (k.includes('local')) return '블록 안에서만 쓰이는 지역 변수입니다.'
+  return VERSE_KIND_DESC[k]
+}
+// 내장(원시) 타입 설명 — 본문 글로서리(main/lsp/verse.ts)와 같은 내용의 작은 미러. 카드 안 코드
+// (파라미터/반환형)에 나온 `char`·`float`·`void` 같은 타입에 가까이 댔을 때 설명을 띄우는 데 쓴다.
+const VERSE_BUILTIN_TYPE_DESC: Record<string, string> = {
+  int: '정수입니다.',
+  float: '소수점이 있는 수입니다.',
+  logic: '참이나 거짓 둘 중 하나를 담습니다.',
+  string: '글자들이 이어진 문자열입니다.',
+  void: '값이 사실상 없음을 뜻하는 타입입니다. 돌려줄 게 없는 함수의 반환형으로 씁니다.',
+  char: '글자 하나를 담습니다.',
+  char32: '유니코드 코드포인트 하나를 담는 글자입니다.',
+  char8: 'UTF-8 바이트 하나를 담는 글자입니다.',
+  rational: '오차 없이 정확한 분수를 담습니다.',
+  any: '모든 타입을 다 받는 가장 위쪽 타입입니다.',
+  comparable: '서로 같은지 비교할 수 있는 타입입니다.',
+  tuple: '여러 값을 한 묶음으로 담습니다.',
+  array: '여러 값을 순서대로 담는 배열입니다.',
+  map: '키로 값을 찾는 묶음입니다.',
+  weak_map: '영속 저장에 주로 쓰는 특수한 맵입니다.',
+  type: '타입 자체를 값처럼 다룹니다.',
+  subtype: '어떤 타입이거나 그 자식 타입이면 받아 주는 제약입니다.'
+}
+// 카드 안 코드 토큰(단어) 하나의 설명 — 지정자/속성 → 내장 타입 → (레지스트리로 아는) 사용자/엔진
+// 타입의 종류 순으로 찾는다. 없으면 undefined(설명 안 띄움).
+function verseWordDesc(word: string): string | undefined {
+  const tok = VERSE_TOK_DESC.get(word) ?? (word.startsWith('editable_') ? VERSE_TOK_DESC.get('editable') : undefined)
+  if (tok) return tok
+  if (VERSE_BUILTIN_TYPE_DESC[word]) return VERSE_BUILTIN_TYPE_DESC[word]
+  const reg = verseReg()
+  if (reg.docs[word]) return reg.docs[word] // 그 타입(class/struct/enum)의 실제 주석(#/@doc) 우선
+  const k = reg.kind[word]
+  return k ? VERSE_KIND_DESC[k] : undefined // 주석이 없을 때만 종류 일반 설명으로 폴백
+}
+// 지정자 묶음을 access → specifiers(그 외) → effects 순의 (비어있지 않은) 행들로 가른다.
+// `kind`를 받아: ① 접근지시자가 없으면 Verse 기본값 `internal`을 명시해 보여 주고,
+// ② `var`는 읽기/쓰기 접근이 갈리므로 'read access'·'write access'로 나눠 보여 준다.
+function splitVerseSpecs(mods: string[], kind?: string, write?: string): { k: string; items: string[] }[] {
+  const access: string[] = []
+  const effects: string[] = []
+  const attrs: string[] = []
+  const other: string[] = []
+  for (const m of mods) {
+    const n = verseSpecName(m)
+    if (VERSE_ACCESS.has(n)) access.push(m)
+    else if (VERSE_EFFECT.has(n)) effects.push(m)
+    else if (VERSE_KNOWN_SPEC.has(n)) other.push(m) // a genuine declaration specifier → specifiers row
+    else attrs.push('@' + n) // not a known specifier → it's a folded @attribute (<import_as(…)> → @import_as)
+  }
+  // A DATA member with no access specifier defaults to `internal` — surface it so the card is
+  // unambiguous. Only for data/callable members (var/constant/function); type DEFINITIONS
+  // (class/struct/enum/interface) don't get the injected default (and synthesized param/local
+  // cards, whose kind is capitalised like 'Parameter', never match here either).
+  const isMemberDecl = !!kind && /^(var|constant|function)$/.test(kind)
+  if (!access.length && isMemberDecl) access.push('<internal>')
+  const rows: { k: string; items: string[] }[] = []
+  if (kind === 'var') {
+    // a `var`'s name-specifier is its READ (get) access; the WRITE (set) access is the explicit
+    // `var<…>` setter (`write`, looked up from the registry since verse-lsp drops it) and only
+    // falls back to the read access when no setter was specified.
+    const read = access[0] ?? '<internal>'
+    rows.push({ k: 'read access', items: [read] })
+    rows.push({ k: 'write access', items: [write ? `<${write}>` : read] })
+  } else if (access.length) {
+    rows.push({ k: 'access', items: access })
+  }
+  if (other.length) rows.push({ k: 'specifiers', items: other })
+  if (effects.length) rows.push({ k: 'effects', items: effects })
+  if (attrs.length) rows.push({ k: 'attributes', items: attrs })
+  return rows
 }
 
 // 세션 동안 배운 식별자→색 누적 사전 — 호버 시그니처가 참조하는 타입(TArray 등)이
@@ -443,13 +705,54 @@ export function HoverContent({
   const kindDisplay = useMemo(() => {
     if (!p?.kind) return null
     if (allMods.includes('static') && !/static/i.test(p.kind)) return 'static ' + p.kind
+    // Verse: label by the CONTAINER's kind when the hovered symbol is a member of an enum/struct
+    // ('Enum Value' / 'Struct Value'); otherwise make data-member labels unambiguous — a non-`var`
+    // binding is an immutable 'Constant Variable', a `var` binding is a (mutable) 'Variable'.
+    if (lang === 'verse') {
+      // the dotted-value form (`enum (/…:)Type.Value`) already resolved to '<kind> value'
+      if (p.kind === 'enum value') return 'Enum Value'
+      if (p.kind === 'struct value') return 'Struct Value'
+      // otherwise: if the hover qualifier's last segment is itself an enum/struct, the symbol is a
+      // member of it (a use-site field/value). (The type itself has container = its module.)
+      const container = (p.from?.v ?? '').replace(/`/g, '').split('/').filter(Boolean).pop()
+      const ck = container ? verseReg().kind[container] : undefined
+      if (ck === 'enum' || ck === 'struct') return ck === 'enum' ? 'Enum Value' : 'Struct Value'
+      if (p.kind === 'constant') return 'Constant Variable'
+      if (p.kind === 'var') return 'Variable'
+    }
     return p.kind
-  }, [p, allMods])
+  }, [p, allMods, lang])
   const mods = useMemo(() => {
     if (!p) return []
     const kindWords = (p.kind ?? '').toLowerCase()
     return allMods.filter((m) => m !== 'static' && !kindWords.includes(m))
   }, [p, allMods])
+  // Verse: the hovered symbol's OWN name is rendered as an isolated `Player` token, so the registry
+  // highlighter can't see it's a binding and promotes any name matching a type (UEFN asset classes are
+  // PascalCase, e.g. a project `Player` class) to the type colour — even when the card already knows
+  // it's a parameter/local/variable/constant. Force those names to the plain identifier colour so a
+  // `for (Player : …)` loop var or `(Player:player)` param doesn't read purple. Real types/functions
+  // keep the highlighter's colour.
+  const namePlain = useMemo(
+    () => lang === 'verse' && /^(parameter|local variable|variable|constant|var)$/i.test(p?.kind ?? ''),
+    [p, lang]
+  )
+  // a Verse `var`'s SETTER (write) access — verse-lsp's hover drops it, so look it up from the
+  // registry by the member's container (the hover qualifier's last path segment) + name.
+  const verseWrite = useMemo(() => {
+    if (lang !== 'verse' || p?.kind !== 'var' || !p.name) return undefined
+    const container = (p.from?.v ?? '').replace(/`/g, '').split('/').filter(Boolean).pop()
+    return container ? verseReg().setters[container]?.[p.name] : undefined
+  }, [p, lang])
+  // Verse: when the container is a TYPE, label the footer with the owner's KIND (struct/enum/class)
+  // and show its name — e.g. an Enum Value reads 'enum `weapon_kind`', a struct field 'struct
+  // `vector_pair`' — instead of the raw "module: /…/Type" path.
+  const verseFrom = useMemo(() => {
+    if (lang !== 'verse' || !p?.from) return p?.from
+    const owner = p.from.v.replace(/`/g, '').split('/').filter(Boolean).pop()
+    const ck = owner ? verseReg().kind[owner] : undefined
+    return ck ? { k: ck, v: '`' + owner + '`' } : p.from
+  }, [p, lang])
   // 카드 안의 모든 코드(시그니처·메타 칩·본문 인라인/펜스·푸터)는 본문과 같은
   // 파이프라인 하나로: hljs 베이스 + 언어 팔레트 + 시맨틱 색 사전(decorate).
   // 색 우선순위: 이 파일 사전 → 세션 누적 사전 → UE 명명규칙(C++만)
@@ -468,12 +771,67 @@ export function HoverContent({
     const base = highlightCode(p.sig, p.sigLang || lang)
     return deco ? deco(base) : base
   }, [p, lang, deco])
+  // 카드 안 토큰(<지정자>·@속성·파라미터/반환형의 타입·종류 칩)에 가까이 대면 그게 뭔지 설명을 카드
+  // "하단 띠"에 보여 준다. 떠다니는 말풍선(깜빡임·흰 공·위치 깨짐) 대신 카드에 붙은 고정 영역이라 차분하다.
+  // 이벤트는 위임(델리게이션)으로 받아 char·color·void 같은 코드 안 타입까지 한 번에 처리한다.
+  // 설명은 카드 "바로 아래"(자리 없으면 위)에 한 곳에 떠서, 어느 토큰을 훑든 위치는 그대로 두고 글자만
+  // 바뀐다 — 토큰마다 새로 떴다 사라지지 않으니(요소를 계속 띄워 둠) 깜빡임·흰 공이 없다. 카드 밖에 있어
+  // 카드가 위로 떠도/스크롤돼도 안 가린다.
+  const [tip, setTip] = useState<{ text: string; left: number; top?: number; bottom?: number } | null>(null)
+  const tipHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showTokDesc = (text: string, anchor: HTMLElement): void => {
+    if (tipHideTimer.current) {
+      clearTimeout(tipHideTimer.current)
+      tipHideTimer.current = null
+    }
+    // 호버한 그 토큰 위치에 — 토큰 바로 위(가운데 정렬), 위 공간이 없으면 아래. 디자인은 검정 카드(.lh-tokdesc).
+    const r = anchor.getBoundingClientRect()
+    const left = Math.min(Math.max(r.left + r.width / 2, 176), window.innerWidth - 176)
+    const above = r.top > 92
+    const top = above ? undefined : r.bottom + 9
+    const bottom = above ? window.innerHeight - r.top + 9 : undefined
+    // 위치까지 비교 — 텍스트가 같아도(예: READ/WRITE 둘 다 <internal>) 다른 토큰이면 그 위치로 옮긴다.
+    // (같은 토큰 안에서의 중복 호출만 그대로 둬서 불필요한 리렌더를 막는다)
+    setTip((cur) =>
+      cur && cur.text === text && cur.left === left && cur.top === top && cur.bottom === bottom
+        ? cur
+        : { text, left, top, bottom }
+    )
+  }
+  const scheduleTokHide = (): void => {
+    if (tipHideTimer.current) clearTimeout(tipHideTimer.current)
+    tipHideTimer.current = setTimeout(() => setTip(null), 160)
+  }
+  const onTokOver = (e: React.MouseEvent): void => {
+    const t = e.target as HTMLElement
+    const tagged = t.closest?.('[data-tip]') as HTMLElement | null
+    if (tagged?.dataset.tip) return showTokDesc(tagged.dataset.tip, tagged)
+    // 코드 토큰(잎 스팬)의 단어로 설명을 찾는다 — 파라미터/반환형 안의 타입(char·color·void…)까지
+    if (t.childElementCount === 0 && lang === 'verse') {
+      const w = (t.textContent ?? '').trim()
+      if (/^[A-Za-z_]\w*$/.test(w)) {
+        const d = verseWordDesc(w)
+        if (d) return showTokDesc(d, t)
+      }
+    }
+    scheduleTokHide()
+  }
+  useEffect(() => () => void (tipHideTimer.current && clearTimeout(tipHideTimer.current)), [])
   if (!p) return <Markdown text={md} codeLang={lang} decorate={deco} />
   return (
-    <>
+    <div
+      className="lh-body"
+      onMouseOver={lang === 'verse' ? onTokOver : undefined}
+      onMouseLeave={lang === 'verse' ? scheduleTokHide : undefined}
+    >
       {p.kind && (
         <div className="lh-head lh-kindrow">
-          <span className={'lh-kind ' + hoverKindClass(p.kind)}>{kindDisplay}</span>
+          <span
+            className={'lh-kind ' + (lang === 'verse' ? verseKindClass(p.kind, kindDisplay) : hoverKindClass(p.kind))}
+            data-tip={(lang === 'verse' && verseKindDesc(p.kind)) || undefined}
+          >
+            {kindDisplay}
+          </span>
         </div>
       )}
       {/* 메모리 정보 알약 — 종류 칩 아래 별도 줄, 아래에 전폭 밑줄로 단을 가른다 */}
@@ -493,25 +851,45 @@ export function HoverContent({
         </div>
       )}
       {/* 스펙 행 — NAME → ACCESS(접근지시자) → PARAMS → RETURN 순서, 한 줄에 하나씩 */}
-      {(p.name || mods.length > 0 || p.params.length > 0 || p.metas.length > 0) && (
+      {(p.name || mods.length > 0 || p.params.length > 0 || p.metas.length > 0 || (lang === 'verse' && verseFrom)) && (
         <div className="lh-spec">
           {/* NAME·ACCESS도 PARAMS·RETURN과 같은 코드 칩으로 — 행 전체가 한 결 */}
           {p.name && (
             <>
               <span className="lh-spec-k">name</span>
-              <div className="lh-spec-v lh-name-row">
+              <div className={'lh-spec-v lh-name-row' + (namePlain ? ' nm-plain' : '')}>
                 <Markdown text={'`' + p.name + '`'} codeLang={lang} decorate={deco} />
               </div>
             </>
           )}
-          {mods.length > 0 && (
-            <>
-              <span className="lh-spec-k">access</span>
-              <div className="lh-spec-v">
-                <Markdown text={mods.map((m) => '`' + m + '`').join(' ')} codeLang={lang} decorate={deco} />
-              </div>
-            </>
-          )}
+          {/* Verse: 지정자를 access · specifiers · effects 로 갈라 각각 한 줄씩 */}
+          {lang === 'verse'
+            ? splitVerseSpecs(mods, p.kind ?? undefined, verseWrite).map((row) => (
+                <Fragment key={row.k}>
+                  <span className="lh-spec-k">{row.k}</span>
+                  {/* 토큰마다 따로 칩 — 가까이 대면 native title로 "뭔지" 설명이 뜬다(글로서리와 동일) */}
+                  <div className="lh-spec-v">
+                    <div className="lh-spec-toks">
+                      {row.items.map((m, i) => {
+                        const d = verseTokDesc(m)
+                        return (
+                          <span key={i} className="lh-spec-tok" data-tip={d || undefined}>
+                            <Markdown text={'`' + m + '`'} codeLang={lang} decorate={deco} />
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </Fragment>
+              ))
+            : mods.length > 0 && (
+                <>
+                  <span className="lh-spec-k">access</span>
+                  <div className="lh-spec-v">
+                    <Markdown text={mods.map((m) => '`' + m + '`').join(' ')} codeLang={lang} decorate={deco} />
+                  </div>
+                </>
+              )}
           {p.params.length > 0 && (
             <>
               <span className="lh-spec-k">params</span>
@@ -536,6 +914,16 @@ export function HoverContent({
               </div>
             </Fragment>
           ))}
+          {/* Verse: 소속 타입(struct/enum/class …)을 별도 구분선 footer가 아니라 스펙 그리드의
+              마지막 행으로 — name·access 와 같은 결로 한 줄 더 붙인다 */}
+          {lang === 'verse' && verseFrom && (
+            <>
+              <span className="lh-spec-k">{verseFrom.k}</span>
+              <div className="lh-spec-v">
+                <Markdown text={verseFrom.v} codeLang={lang} decorate={deco} />
+              </div>
+            </>
+          )}
         </div>
       )}
       {p.docs && (
@@ -543,13 +931,21 @@ export function HoverContent({
           <Markdown text={p.docs} codeLang={lang} decorate={deco} />
         </div>
       )}
-      {p.from && (
+      {lang !== 'verse' && verseFrom && (
         <div className="lh-from">
-          <span className="lh-spec-k">{p.from.k}</span>
-          <Markdown text={p.from.v} codeLang={lang} decorate={deco} />
+          <span className="lh-spec-k">{verseFrom.k}</span>
+          <Markdown text={verseFrom.v} codeLang={lang} decorate={deco} />
         </div>
       )}
-    </>
+      {/* 토큰 설명 — 카드 밖(아래/위)에 한 곳에 떠서 글자만 바뀐다. body 포털이라 카드 위(z)에 뜬다 */}
+      {tip &&
+        createPortal(
+          <div className="lh-tokdesc" style={{ left: tip.left, top: tip.top, bottom: tip.bottom }}>
+            {tip.text}
+          </div>,
+          document.body
+        )}
+    </div>
   )
 }
 
@@ -1499,6 +1895,47 @@ interface ViewState {
   jump: { line: number; tick: number } | null
 }
 
+// Card-style confirm for closing the viewer with unsaved CM edits — replaces the native
+// window.confirm (which both broke the card language and, by blocking the thread, left the
+// editor's IME/contentEditable wedged so typing died after a cancel). Esc/Enter both pick
+// the safe default (계속 편집): nothing is lost by mistake, and a real discard needs a click.
+function CloseConfirmDialog({ onStay, onLeave }: { onStay: () => void; onLeave: () => void }) {
+  useEffect(() => {
+    // capture + stopPropagation so the viewer's own window Esc handler stands down — this
+    // card owns Esc while it's open. Enter falls through to the autofocused 취소 button.
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      onStay()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onStay, onLeave])
+
+  return (
+    <div className="set-dialog-overlay" onMouseDown={onStay}>
+      <div className="set-dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="sd-ic">
+          <IconPencil size={22} />
+        </div>
+        <div className="sd-title">저장하지 않고 닫을까요?</div>
+        <div className="sd-msg">
+          아직 <b>저장하지 않은 변경</b>이 있어요. 그대로 닫으면 이 변경 내용은 사라집니다.
+        </div>
+        <div className="sd-btns">
+          <button className="sd-cancel" onClick={onStay} autoFocus>
+            계속 편집
+          </button>
+          <button className="sd-go danger" onClick={onLeave}>
+            저장 안 함
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // A read-only file preview shown as a centered card (same overlay/card language as
 // the diff & settings dialogs) instead of handing the file to the OS. Loads the
 // content over IPC on open; renders it with syntax highlighting / markdown. Code
@@ -1546,7 +1983,16 @@ export function FileModal({
   const [cmDirty, setCmDirty] = useState(false) // CM 버퍼에 미저장 변경이 있는가
   const [cmSaved, setCmSaved] = useState(false) // 방금 저장됨 — 잠깐 '저장됨' 표시
   const [cmMode, setCmMode] = useState<'read' | 'edit'>('read') // 변경 파일은 읽기(diff)로 열고 '편집' 눌러 수정
-  const [diffView, setDiffView] = useState(true) // 읽기 모드의 변경 tint(초록/빨강) 표시 — Ctrl+D로 일반 보기와 토글
+  // 읽기 모드의 변경 tint(초록/빨강) 표시 — Ctrl+D로 일반 보기와 토글. 선택한 보기는
+  // 파일·네비게이션을 넘어 전역으로 유지하고 디스크에도 남긴다(prefs).
+  const [diffView, setDiffViewState] = useState(() => getPref('viewer.diffView', true))
+  const setDiffView = useCallback((next: boolean | ((v: boolean) => boolean)): void => {
+    setDiffViewState((v) => {
+      const nv = typeof next === 'function' ? next(v) : next
+      if (nv !== v) setPref('viewer.diffView', nv)
+      return nv
+    })
+  }, [])
   const cmRef = useRef<CmEditorHandle>(null)
   // 정의 이동 시 떠나는 파일의 캐럿 위치를 기억 → 뒤로가기로 돌아오면 그 자리로 복원 (CM)
   const posMap = useRef(new Map<string, number>())
@@ -1582,11 +2028,11 @@ export function FileModal({
   // Git 카드에서 온 일회성 diff(ov.diff)가 있으면 세션 diff 대신 그걸 쓴다.
   const diff = ov ? ov.diff : (effPath && diffs?.[effPath.replace(/\\/g, '/')]) || null
   const marks = useMemo(() => (diff ? diffMarksOf(diff) : null), [diff])
-  // 파일이 바뀔 때마다 항상 읽기 모드 + diff 보기로 연다(파일 종류 무관 일관). 편집은 Ctrl+E,
-  // 일반(무색) 보기는 Ctrl+D로.
+  // 파일이 바뀔 때마다 항상 읽기 모드로 연다(파일 종류 무관 일관). 편집은 Ctrl+E로.
+  // diff/일반 보기(diffView)는 여기서 리셋하지 않는다 — 사용자가 Ctrl+D로 고른 보기를
+  // 파일·네비게이션을 넘어 전역으로 유지한다.
   useEffect(() => {
     setCmMode('read')
-    setDiffView(true)
   }, [effPath])
   const isMdFile = !!effPath && fileTypeFor(effPath).lang === 'markdown'
   // CM PoC applies to non-markdown code files only (markdown keeps its render/source
@@ -1621,10 +2067,23 @@ export function FileModal({
   // through here). cmDirtyRef mirrors state so the keydown/mouse closures see it live.
   const cmDirtyRef = useRef(false)
   cmDirtyRef.current = cmDirty
+  // 미저장 변경이 있으면 곧장 닫지 않고 카드형 확인을 띄운다(네이티브 confirm 대신). 확인이
+  // 떠 있는 동안엔 뷰어의 Esc/단축키가 물러나고(아래 closeConfirmRef 가드), 취소하면 편집기로
+  // 포커스를 돌려준다 — confirm이 스레드를 막아 IME가 엉키던 "취소 후 입력 불가"도 함께 해소.
+  const [closeConfirm, setCloseConfirm] = useState(false)
+  const closeConfirmRef = useRef(false)
+  closeConfirmRef.current = closeConfirm
   const requestClose = useCallback((): void => {
-    if (cmDirtyRef.current && !window.confirm('저장하지 않은 변경이 있어요. 저장하지 않고 닫을까요?')) return
+    if (cmDirtyRef.current) {
+      setCloseConfirm(true)
+      return
+    }
     onClose()
   }, [onClose])
+  // 파일이 바뀌면(다른 파일 열기/뒤로) 떠 있던 확인 카드는 의미가 없어지므로 닫는다
+  useEffect(() => {
+    setCloseConfirm(false)
+  }, [effPath])
 
   // Ctrl+W — main이 앱 종료를 막고 보내는 신호. 코드 뷰어가 열려 있으면 닫는다 (Esc와 동일)
   useEffect(() => {
@@ -1765,6 +2224,7 @@ export function FileModal({
     if (!path) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return
+      if (closeConfirmRef.current) return // 닫기 확인 카드가 떠 있으면 그 카드가 Esc를 가진다
       if (document.querySelector('.sel-bar')) return // 선택 툴바가 먼저 접힌다
       if (document.querySelector('.cm-host .cm-find')) return // CM 검색 바가 열려 있으면 그게 먼저 닫힌다
       if (askOpenRef.current) {
@@ -1787,6 +2247,7 @@ export function FileModal({
     if (!path) return
     const onKey = (e: KeyboardEvent): void => {
       if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f')) return
+      if (closeConfirmRef.current) return // 확인 카드가 떠 있으면 단축키는 물러난다
       e.preventDefault()
       // CM 편집기 코드 파일은 CM 검색 패널(가상화 대응)을, 그 외엔 기존 FindBar를 연다
       if (cmEligible) cmRef.current?.openSearch()
@@ -1802,6 +2263,7 @@ export function FileModal({
     if (!path || !cmEligible) return
     const onKey = (e: KeyboardEvent): void => {
       if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'e')) return
+      if (closeConfirmRef.current) return // 확인 카드가 떠 있으면 모드 토글을 막는다
       e.preventDefault()
       e.stopPropagation()
       setCmMode((m) => (m === 'read' ? 'edit' : 'read'))
@@ -1817,6 +2279,7 @@ export function FileModal({
     const onKey = (e: KeyboardEvent): void => {
       if (!((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.code === 'KeyD' || e.key.toLowerCase() === 'd')))
         return
+      if (closeConfirmRef.current) return // 확인 카드가 떠 있으면 보기 토글을 막는다
       e.preventDefault()
       e.stopPropagation()
       setDiffView((v) => !v)
@@ -2110,6 +2573,15 @@ export function FileModal({
       </div>
       {onAskSelection && !isImg && !ask && (
         <SelectionAskBar root={cardEl} onAsk={(text, from, to) => setAsk({ text, from, to })} />
+      )}
+      {closeConfirm && (
+        <CloseConfirmDialog
+          onStay={() => {
+            setCloseConfirm(false)
+            cmRef.current?.focus() // 편집기로 포커스 복귀 — 곧바로 이어서 타이핑되도록
+          }}
+          onLeave={onClose}
+        />
       )}
     </div>
   )

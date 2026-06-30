@@ -172,14 +172,18 @@ export interface LspProjectStatus {
 }
 /** A known language server + its provisioning state (설정 ▸ 코드 분석). */
 export interface LspServerInfo {
-  id: string // 'ts' | 'py' | 'cs' | 'cpp'
+  id: string // 'ts' | 'py' | 'cs' | 'cpp' | 'verse'
   label: string // server display name, e.g. 'C#'
   langs: string // covered languages, e.g. 'TypeScript · JavaScript'
   exts: string // covered extensions, e.g. '.cs .csx'
-  kind: 'bundled' | 'download'
-  // bundled = ships with the app (always available) · none = not yet downloaded
+  // bundled = ships with the app · download = fetched on demand · external = user supplies
+  // the binary (Verse: Epic's verse-lsp.exe, can't be shipped/downloaded)
+  kind: 'bundled' | 'download' | 'external'
+  // bundled = ships with the app (always available) · none = not provisioned · installed =
+  // downloaded (download) or configured (external) · installing = download in progress
   state: 'bundled' | 'none' | 'installing' | 'installed'
   requires?: string // external prerequisite note, e.g. '.NET SDK(dotnet) 필요'
+  path?: string // external: the configured source path (vsix/exe) — for display
 }
 /** Streamed progress while downloading a language server. */
 export interface LspInstallProgress {
@@ -214,6 +218,46 @@ export interface LspSemanticTokens {
   types: string[]
   /** modifier bit position → LSP token modifier name (the server's legend) */
   mods: string[]
+}
+/** A private CompletionItemKind (outside LSP's 1–25) we tag Verse language built-ins with — built-in
+ *  types (int/float/…) AND reserved literals/keywords (true/false/…). The renderer gives them their own
+ *  `#` "official built-in" icon in the keyword colour, distinct from user-defined symbols. */
+export const VERSE_BUILTIN_KIND = 1001
+
+/** One completion candidate — a trimmed LSP CompletionItem the renderer turns into a CM option. */
+export interface LspCompletionItem {
+  label: string
+  /** LSP CompletionItemKind (1=Text, 3=Function, 5=Field, 7=Class … 25=TypeParameter) — drives the CM icon */
+  kind?: number
+  /** type / signature shown beside the label (e.g. `:int`) */
+  detail?: string
+  /** markdown docs (flattened), shown in the side panel */
+  documentation?: string
+  /** text to insert (falls back to label); when `snippet` it carries LSP `${1:..}` placeholders */
+  insertText?: string
+  /** true when insertText is an LSP snippet (insertTextFormat=2) rather than plain text */
+  snippet?: boolean
+  /** server-provided sort/filter hints (CM uses them when present) */
+  sortText?: string
+  filterText?: string
+}
+/** Completion result at a position — candidates + whether the list is partial (re-query on more typing). */
+export interface LspCompletionList {
+  items: LspCompletionItem[]
+  isIncomplete: boolean
+}
+/**
+ * Accurate Verse type registry parsed from the project's digests + `.verse` files (verse-lsp emits
+ * no semantic tokens, so the renderer colours/labels from this instead of guessing). Per UE project.
+ */
+export interface VerseRegistry {
+  kind: Record<string, 'class' | 'struct' | 'enum' | 'interface'> // type name → its kind
+  supers: Record<string, string[]> // type name → super-type names (for inherited-member resolution)
+  members: Record<string, string[]> // type name → its direct member names (fields + methods)
+  methods: Record<string, string[]> // type name → its method names (subset of members) — coloured as functions
+  enumValues: Record<string, string[]> // enum name → its value names (subset of members)
+  setters: Record<string, Record<string, string>> // type → member → SETTER (write) access, when explicit
+  docs: Record<string, string> // type name → its doc comment (`#`/`@doc`) — shown when hovering the type in a card
 }
 
 // ── Terminal (Bash tool) ─────────────────────────────────────
@@ -504,6 +548,11 @@ export const IPC = {
   mcpList: 'mcp:list', // enumerate user + project + local MCP servers with on/off state
   mcpSetEnabled: 'mcp:set-enabled', // turn an MCP server on/off (persisted to the app home)
   shellOpenPath: 'shell:open-path', // open a file with the OS default app
+  shellRevealPath: 'shell:reveal-path', // reveal a file/folder in the OS file manager (Explorer/Finder)
+  fsRename: 'fs:rename', // rename a file/folder within its parent (explorer context menu)
+  fsDelete: 'fs:delete', // move a file/folder to the OS trash / recycle bin (explorer context menu)
+  fsCreate: 'fs:create', // create a new empty file or folder (explorer context menu)
+  fsMove: 'fs:move', // move a file/folder into another folder (explorer drag & drop)
   readFile: 'fs:read-file', // read a file's text content for the in-app viewer card
   writeFile: 'fs:write-file', // overwrite a file's text content from the in-app editor (Ctrl+S)
   closeShortcut: 'shortcut:close', // Ctrl+W pressed (main swallows it) → renderer closes the open viewer
@@ -514,12 +563,20 @@ export const IPC = {
   lspDefinition: 'lsp:definition', // definition target(s) for the symbol at a position
   lspSemanticTokens: 'lsp:semantic-tokens', // semantic highlighting tokens for a document
   lspCachedTokens: 'lsp:cached-tokens', // disk-cached tokens for instant paint (no server spawn)
+  lspCompletion: 'lsp:completion', // completion candidates at a position (carries the live editor buffer)
   lspPrewarm: 'lsp:prewarm', // warm up a project's server/compile-DB before the first file open
+  lspWarm: 'lsp:warm', // eagerly open a specific file on its server so it's indexed before typing
+  lspVerseRegistry: 'lsp:verse-registry', // accurate Verse type registry (digests+project) for colouring
   lspProjectStatus: 'lsp:project-status', // aggregate analysis state for a folder (explorer badge)
+  lspVerseDigests: 'lsp:verse-digests', // Verse API digest folders for the explorer (Verse.org/Fortnite.com/…)
+  lspVerseExcludes: 'lsp:verse-excludes', // files.exclude globs for "Verse 위주로 보기" (from .code-workspace)
   lspInstall: 'lsp:install', // download a native language server (C#/C++) on user request
   lspServers: 'lsp:servers', // list every known language server + provisioning state (settings)
   lspInstallServer: 'lsp:install-server', // download a server by id (settings)
   lspUninstallServer: 'lsp:uninstall-server', // stop + delete a downloaded server (settings)
+  lspPickVerseServer: 'lsp:pick-verse-server', // file dialog to choose Verse.vsix / verse-lsp.exe
+  lspSetVersePath: 'lsp:set-verse-path', // configure the Verse server from a vsix/exe path
+  lspClearVersePath: 'lsp:clear-verse-path', // forget the configured Verse server
   winMinimize: 'win:minimize',
   winMaximizeToggle: 'win:maximize-toggle',
   winClose: 'win:close',

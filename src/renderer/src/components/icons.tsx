@@ -32,6 +32,14 @@ export const IconSearch = (p: IconProps) => (
     <path d="M21 21l-4.3-4.3" />
   </Icon>
 )
+// 필터 — 줄어드는 가로선 3개. "Verse 위주로 보기" 토글에 쓴다(앱의 라인아트 톤 유지)
+export const IconFilter = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3 5h18" />
+    <path d="M6 12h12" />
+    <path d="M10 19h4" />
+  </Icon>
+)
 export const IconCopy = (p: IconProps) => (
   <Icon {...p}>
     <rect x={9} y={9} width={11} height={11} rx={2.5} />
@@ -51,6 +59,13 @@ export const IconChevRight = (p: IconProps) => (
 export const IconChevLeft = (p: IconProps) => (
   <Icon {...p}>
     <path d="M15 6l-6 6 6 6" />
+  </Icon>
+)
+// 사이드 패널(탐색기) 토글 — 좌측 칼럼이 그어진 패널. "패널 보이기/숨기기"의 통념 아이콘
+export const IconPanelLeft = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x={3} y={4} width={18} height={16} rx={2} />
+    <path d="M9 4v16" />
   </Icon>
 )
 export const IconImage = (p: IconProps) => (
@@ -211,6 +226,13 @@ export const IconFolderOpen = (p: IconProps) => (
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v1" />
     <path d="M3 7v10a2 2 0 0 0 2 2h12.2a2 2 0 0 0 1.94-1.5l1.6-6A2 2 0 0 0 18.8 9H7.06a2 2 0 0 0-1.94 1.5z" />
   </Icon>
+)
+// Epic Verse 로고(V) — 앱 fileicons/verse.svg 그대로. 채움형 글리프라 라인아트 Icon
+// 래퍼와 별개로 두고, color(=currentColor·fill)로 코랄 등 원하는 색을 입힌다.
+export const IconVerse = ({ size = 16, className, style }: IconProps) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" className={className} style={style}>
+    <path d="m1 1 7 14 7-14H9l3 2c-1.164 2.334-2.34 4.664-3.5 7-1.507-2.997-3-6-4.5-9z" />
+  </svg>
 )
 export const IconPlug = (p: IconProps) => (
   <Icon {...p}>

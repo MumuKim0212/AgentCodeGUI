@@ -36,16 +36,42 @@ export class StdioRpc {
   }
 
   request<T>(method: string, params: unknown, timeoutMs = 15000): Promise<T> {
-    if (this.dead) return Promise.reject(this.dead)
+    return this.requestId<T>(method, params, timeoutMs).promise
+  }
+
+  /**
+   * Like request(), but also hands back the request id so the caller can later cancel(id) it.
+   * Used by interactive-while-typing requests (completion): a newer keystroke obsoletes the
+   * in-flight request, and cancelling it stops the server churning through a stale backlog.
+   */
+  requestId<T>(method: string, params: unknown, timeoutMs = 15000): { id: number; promise: Promise<T> } {
+    if (this.dead) return { id: -1, promise: Promise.reject(this.dead) }
     const id = this.nextId++
     this.write({ jsonrpc: '2.0', id, method, params })
-    return new Promise<T>((resolve, reject) => {
+    const promise = new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
         reject(new Error(`LSP 요청 시간 초과: ${method}`))
       }, timeoutMs)
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
     })
+    return { id, promise }
+  }
+
+  /**
+   * Abandon an in-flight request: tell the server to stop ($/cancelRequest) and settle our
+   * pending entry as null (a cancelled completion is "no result", not an error). A late
+   * response then finds no pending entry and is dropped. No-op for an invalid/settled id.
+   */
+  cancel(id: number): void {
+    if (id < 0) return
+    const p = this.pending.get(id)
+    if (p) {
+      this.pending.delete(id)
+      clearTimeout(p.timer)
+      p.resolve(null)
+    }
+    if (!this.dead) this.notify('$/cancelRequest', { id })
   }
 
   notify(method: string, params: unknown): void {

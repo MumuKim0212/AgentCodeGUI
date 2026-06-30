@@ -41,11 +41,16 @@ const api: WindowApi = {
   getUiPrefs: () => ipcRenderer.invoke(IPC.uiPrefsGet) as Promise<Record<string, unknown>>,
   saveUiPrefs: (prefs: Record<string, unknown>) => ipcRenderer.invoke(IPC.uiPrefsSave, prefs),
   openPath: (cwd, relPath) => ipcRenderer.invoke(IPC.shellOpenPath, { cwd, relPath }),
+  revealPath: (cwd, relPath) => ipcRenderer.invoke(IPC.shellRevealPath, { cwd, relPath }),
+  renamePath: (cwd, relPath, newName) => ipcRenderer.invoke(IPC.fsRename, { cwd, relPath, newName }),
+  deletePath: (cwd, relPath) => ipcRenderer.invoke(IPC.fsDelete, { cwd, relPath }),
+  createPath: (cwd, relPath, dir) => ipcRenderer.invoke(IPC.fsCreate, { cwd, relPath, dir }),
+  movePath: (cwd, srcRel, destRel) => ipcRenderer.invoke(IPC.fsMove, { cwd, srcRel, destRel }),
   readFile: (cwd, relPath) => ipcRenderer.invoke(IPC.readFile, { cwd, relPath }),
   writeFile: (cwd, relPath, content) => ipcRenderer.invoke(IPC.writeFile, { cwd, relPath, content }),
   onCloseShortcut: (cb) => subscribe<void>(IPC.closeShortcut, () => cb()),
   listFiles: (cwd) => ipcRenderer.invoke(IPC.listFiles, cwd),
-  listDir: (cwd, rel) => ipcRenderer.invoke(IPC.listDir, { cwd, rel }),
+  listDir: (cwd, rel, exclude, hideEmpty) => ipcRenderer.invoke(IPC.listDir, { cwd, rel, exclude, hideEmpty }),
   git: {
     root: (cwd: string, force?: boolean) => ipcRenderer.invoke(IPC.gitRoot, { cwd, force }),
     status: (root: string) => ipcRenderer.invoke(IPC.gitStatus, root),
@@ -74,18 +79,28 @@ const api: WindowApi = {
   },
   lsp: {
     status: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspStatus, { cwd, relPath }),
-    hover: (cwd: string, relPath: string, pos: LspPos) => ipcRenderer.invoke(IPC.lspHover, { cwd, relPath, pos }),
-    definition: (cwd: string, relPath: string, pos: LspPos) =>
-      ipcRenderer.invoke(IPC.lspDefinition, { cwd, relPath, pos }),
+    hover: (cwd: string, relPath: string, pos: LspPos, text?: string) =>
+      ipcRenderer.invoke(IPC.lspHover, { cwd, relPath, pos, text }),
+    definition: (cwd: string, relPath: string, pos: LspPos, text?: string) =>
+      ipcRenderer.invoke(IPC.lspDefinition, { cwd, relPath, pos, text }),
     semanticTokens: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspSemanticTokens, { cwd, relPath }),
     cachedTokens: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspCachedTokens, { cwd, relPath }),
+    completion: (cwd: string, relPath: string, pos: LspPos, text: string) =>
+      ipcRenderer.invoke(IPC.lspCompletion, { cwd, relPath, pos, text }),
     prewarm: (cwd: string) => ipcRenderer.invoke(IPC.lspPrewarm, { cwd }),
+    warm: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspWarm, { cwd, relPath }),
+    verseRegistry: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspVerseRegistry, { cwd, relPath }),
     projectStatus: (cwd: string) => ipcRenderer.invoke(IPC.lspProjectStatus, { cwd }),
+    verseDigests: (cwd: string) => ipcRenderer.invoke(IPC.lspVerseDigests, { cwd }),
+    verseExcludes: (cwd: string) => ipcRenderer.invoke(IPC.lspVerseExcludes, { cwd }),
     install: (cwd: string, relPath: string) => ipcRenderer.invoke(IPC.lspInstall, { cwd, relPath }),
     onInstallProgress: (cb) => subscribe(IPC.lspInstallProgress, cb),
     servers: () => ipcRenderer.invoke(IPC.lspServers),
     installServer: (id: string) => ipcRenderer.invoke(IPC.lspInstallServer, id),
-    uninstallServer: (id: string) => ipcRenderer.invoke(IPC.lspUninstallServer, id)
+    uninstallServer: (id: string) => ipcRenderer.invoke(IPC.lspUninstallServer, id),
+    pickVerseServer: () => ipcRenderer.invoke(IPC.lspPickVerseServer),
+    setVersePath: (p: string) => ipcRenderer.invoke(IPC.lspSetVersePath, p),
+    clearVersePath: () => ipcRenderer.invoke(IPC.lspClearVersePath)
   },
   win: {
     minimize: () => ipcRenderer.invoke(IPC.winMinimize),

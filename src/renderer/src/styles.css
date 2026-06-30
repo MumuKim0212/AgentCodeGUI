@@ -394,11 +394,20 @@ input,textarea{ font-family:inherit; }
   display:flex; flex-direction:column; min-height:0;
   background:var(--bg); border-right:1px solid var(--line);
 }
-.exp-head{ display:flex; align-items:center; gap:2px; padding:12px 10px 6px 16px; }
+/* 헤더를 폴더 목록보다 위 레이어로 — 아래로 떨어지는 헤더 버튼 툴팁이 첫 폴더 행(메인 칩)
+   위에 확실히 그려지게 한다(같은 컨텍스트면 칩이 가려 버리던 문제). */
+.exp-head{ display:flex; align-items:center; gap:2px; padding:12px 10px 6px 16px; position:relative; z-index:2; }
 .exp-title{ flex:1; font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--text-4); white-space:nowrap; }
 .exp-act{ color:var(--text-3); padding:5px; border-radius:7px; display:grid; place-items:center; transition:background .12s,color .12s; }
 .exp-act:hover{ background:var(--surface-2); color:var(--text); }
-.exp-act:disabled{ opacity:.4; cursor:default; }
+/* 비활성은 아이콘만 흐리게 — 버튼 전체에 opacity를 주면 그 자식인 ::after 툴팁까지 흐려져
+   (예: 비활성 Git 버튼) 다른 버튼 툴팁과 달리 흐릿해진다. svg에만 줘서 툴팁은 선명하게. */
+.exp-act:disabled{ cursor:default; }
+.exp-act:disabled svg{ opacity:.4; }
+/* 헤더는 창 맨 위라 기본(위로 뜨는) 툴팁이 잘리고 타이틀바 뒤로 깔린다 → 세로만 버튼 아래로
+   뒤집고, 가로는 앱 기본대로 버튼 가운데 정렬을 유지해 어느 버튼인지 분명히 가리킨다. */
+.exp-head .has-tip::after{ bottom:auto; top:100%; margin-bottom:0; margin-top:8px; transform:translate(-50%, -3px); }
+.exp-head .has-tip:hover::after{ transform:translate(-50%, 0); }
 /* 폴더 리스트 — 메인 작업 폴더 + 보기 전용 참고 폴더들 + "폴더 추가" 행.
    활성(지금 트리가 보여주는) 폴더는 accent-soft, 메인은 코랄 폴더 아이콘으로 구분. */
 .exp-folders{ display:flex; flex-direction:column; gap:4px; margin:0 10px 8px; }
@@ -422,6 +431,34 @@ input,textarea{ font-family:inherit; }
   color:var(--accent); background:var(--accent-soft);
 }
 :root[data-theme="dark"] .f-main-chip{ color:var(--accent-2); }
+/* Verse API 묶음 — .code-workspace/.vproject에서 자동 발견한 보기 전용 패키지들. 접이식
+   부모 한 줄 + 펼치면 자식(트리형). 코랄 V 글리프는 이 묶음(부모+자식)에만 입힌다 —
+   메인/참고/일반 트리 폴더 아이콘은 앱 기본 톤 그대로. */
+.exp-frow.verse .f-ic{ color:#d4604a; }
+.exp-frow.verse .exp-tw{ color:var(--text-4); }
+.f-vcount{
+  flex:0 0 auto; font-size:9px; font-weight:700;
+  padding:2px 6px; border-radius:99px;
+  color:var(--text-3); background:var(--accent-soft);
+}
+/* "Verse 위주로 보기" 토글 — Verse API 행 안의 작은 필터 버튼(에셋·정크 숨김). 켜지면 코랄. */
+.v-filter{
+  flex:0 0 auto; display:grid; place-items:center; padding:3px; border-radius:6px;
+  color:var(--text-4); transition:background .12s, color .12s;
+}
+.v-filter:hover{ background:var(--surface-3); color:var(--text-2); }
+.v-filter.on{ color:#d4604a; background:oklch(0.66 0.16 30 / 0.16); }
+.v-filter.on:hover{ color:#d4604a; background:oklch(0.66 0.16 30 / 0.24); }
+.exp-vchild{
+  display:flex; align-items:center; gap:8px; width:100%;
+  padding:6px 9px 6px 24px; border:1px solid transparent; border-radius:9px;
+  font-size:12px; font-weight:500; color:var(--text-2); text-align:left;
+  background:none; transition:background .12s, border-color .12s;
+}
+.exp-vchild:hover{ background:var(--surface-2); border-color:var(--accent-line); }
+.exp-vchild.active{ background:var(--accent-soft); border-color:var(--accent-line); color:var(--text); }
+.exp-vchild .f-ic{ flex:0 0 auto; color:#d4604a; }
+.exp-vchild .f-name{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* 참고 폴더 닫기 — 호버 시에만 (메인은 닫기 불가라 × 자체가 없다) */
 .f-x{
   flex:0 0 auto; display:none; place-items:center; padding:2px; border-radius:5px;
@@ -479,6 +516,10 @@ input,textarea{ font-family:inherit; }
 .exp-row:hover{ background:var(--surface-2); box-shadow:var(--hover-ring); }
 .exp-row.sel{ background:var(--accent-soft); color:var(--text); }
 .exp-tw{ width:13px; flex:0 0 13px; display:grid; place-items:center; color:var(--text-4); transition:transform .12s; }
+/* 드래그 앤 드롭 이동 — 끄는 항목은 흐리게, 들어갈 폴더/루트는 강조 */
+.exp-row.dragging{ opacity:.45; }
+.exp-row.drop-into{ background:var(--accent-soft); box-shadow:inset 0 0 0 1px var(--accent-line); }
+.exp-tree.drop-root{ box-shadow:inset 0 0 0 2px var(--accent-line); border-radius:9px; }
 .exp-tw.open{ transform:rotate(90deg); }
 .exp-fic{ flex:0 0 auto; display:grid; place-items:center; color:var(--text-3); }
 .exp-fbadge{ flex:0 0 auto; display:grid; place-items:center; }
@@ -510,20 +551,17 @@ input,textarea{ font-family:inherit; }
   background:var(--accent); color:var(--on-accent); transition:background .12s;
 }
 .exp-blank-btn:hover{ background:var(--accent-2); }
-/* 접힘(탐색기·사이드바 공용): 펼치기 버튼 하나만 남는 좁은 레일 */
-.explorer-rail, .sidebar-rail{
-  width:30px; flex:0 0 30px;
-  display:flex; flex-direction:column; align-items:center;
-  padding-top:10px; background:var(--bg); border-right:1px solid var(--line);
-}
-.exp-rail-btn{ color:var(--text-3); padding:5px; border-radius:7px; display:grid; place-items:center; transition:background .12s,color .12s; }
-.exp-rail-btn:hover{ background:var(--surface-2); color:var(--text); }
-/* 레일(접힘) 버튼 툴팁 — 기본(위 중앙)은 창 왼쪽 모서리에 잘리므로 버튼 오른쪽에 띄운다 */
-.explorer-rail .has-tip::after, .sidebar-rail .has-tip::after{
-  bottom:auto; top:50%; left:100%; margin-bottom:0; margin-left:9px;
-  transform:translate(-3px, -50%);
-}
-.explorer-rail .has-tip:hover::after, .sidebar-rail .has-tip:hover::after{ transform:translate(0, -50%); }
+/* 사이드바를 접으면 레일을 남기지 않고 완전히 사라진다 — 다시 열기 토글은 타이틀바
+   좌측 슬롯(.tb-left)으로 포털된다(Sidebar.tsx). 비어 있으면 :empty로 숨겨 제목 위치
+   에 영향이 없다. */
+.tb-left{ display:flex; align-items:center; }
+.tb-left:empty{ display:none; }
+.tb-sb-toggle{ display:grid; place-items:center; width:30px; height:30px; color:var(--text-3); border-radius:8px; transition:background .12s, color .12s; }
+.tb-sb-toggle:hover{ background:var(--surface-2); color:var(--text); }
+/* 타이틀바 맨 위·맨 왼쪽이라 기본(위 중앙) 툴팁은 창 위/왼쪽 모서리에 잘린다 →
+   버튼 아래로, 그리고 버튼 왼쪽 끝에 맞춰 오른쪽으로 펼친다(가운데 정렬 X) */
+.tb-sb-toggle.has-tip::after{ bottom:auto; top:100%; left:0; margin-bottom:0; margin-top:8px; transform:translate(0, -3px); }
+.tb-sb-toggle.has-tip:hover::after{ transform:translate(0, 0); }
 
 /* ============================== CHAT ============================== */
 .chat{ flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg); position:relative; }
@@ -567,6 +605,12 @@ input,textarea{ font-family:inherit; }
 .chat-head .spacer{ flex:1; }
 .chat-head .h-ic{ color:var(--text-3); padding:7px; border-radius:8px; transition:background .12s,color .12s; }
 .chat-head .h-ic:hover{ background:var(--surface-2); color:var(--text); }
+/* 탐색기 접힘 시 헤더 좌상단에 뜨는 "탐색기 열기" 토글 — 레일 잔여물 없이 다시 여는 버튼 */
+.chat-head-toggle{ display:grid; place-items:center; color:var(--text-3); padding:6px; margin-left:-2px; border-radius:8px; transition:background .12s, color .12s; }
+.chat-head-toggle:hover{ background:var(--surface-2); color:var(--text); }
+/* 헤더 맨 위·왼쪽이라 기본(위 중앙) 툴팁은 잘린다 → 버튼 아래로, 왼쪽 끝 맞춰 오른쪽 펼침 */
+.chat-head-toggle.has-tip::after{ bottom:auto; top:100%; left:0; margin-bottom:0; margin-top:8px; transform:translate(0, -3px); }
+.chat-head-toggle.has-tip:hover::after{ transform:translate(0, 0); }
 
 .chat-scroll{ flex:1; overflow-y:auto; min-height:0; }
 /* 대화 본문 폭은 채팅 칼럼에 비례 — 좁을 땐 예전처럼 760px 기준으로 꽉 채우고,
@@ -575,9 +619,10 @@ input,textarea{ font-family:inherit; }
    px 경계를 줌 배율(--z, Ctrl+휠)로 나누는 건 zoom이 레이아웃까지 키우는 보정 —
    이렇게 해야 확대해도 칼럼의 "보이는 폭"은 그대로 두고 글자만 커지며 재줄바꿈된다 */
 .thread{ max-width:clamp(calc(760px / var(--z, 1)), 88%, calc(1400px / var(--z, 1))); margin:0 auto; padding:26px 28px 30px; display:flex; flex-direction:column; gap:24px; }
-/* 순수 채팅 모드(.chat--talk): 탐색기·에이전트 패널이 없어 칼럼이 끝까지 넓다.
-   본문을 92%·상한 1600px로 키워 양옆 여백을 줄인다 (가용 폭이 좁으면 그대로 따라 줄어듦) */
-.chat--talk .thread{ max-width:clamp(calc(760px / var(--z, 1)), 92%, calc(1600px / var(--z, 1))); }
+/* 순수 채팅(.chat--talk)·코드(.chat--code) 모드: 오른쪽 에이전트 패널이 없어 칼럼이
+   넓다. 본문을 92%·상한 1600px로 키워 양옆 여백을 줄인다 (가용 폭이 좁으면 따라 줄어듦) */
+.chat--talk .thread,
+.chat--code .thread{ max-width:clamp(calc(760px / var(--z, 1)), 92%, calc(1600px / var(--z, 1))); }
 /* native virtualization: the browser skips layout/paint for off-screen messages,
    so very long conversations stay smooth to scroll and cheap to render. The `auto`
    keyword remembers each message's real height after it's first measured. */
@@ -651,6 +696,19 @@ input,textarea{ font-family:inherit; }
   border-radius:8px; display:grid; place-items:center;
   background:var(--accent); color:var(--on-accent);
   font-family:var(--font-mono); font-weight:700; font-size:12px;
+}
+/* In dark mode the global --accent drops its coral hue (neutral light gray), so
+   Claude's chat avatar reads as white. Restore the light-mode brand orange just for
+   the Claude marks in the chat (message avatar, tool-led avatar, welcome mark). */
+:root[data-theme="dark"] .msg .ava.ai,
+:root[data-theme="dark"] .toollog.lead .lead-ava{
+  background: oklch(0.61 0.16 42);
+  color: oklch(0.99 0.01 80);
+}
+:root[data-theme="dark"] .wc-mark{
+  background: linear-gradient(140deg, oklch(0.61 0.16 42), oklch(0.55 0.17 38));
+  color: oklch(0.99 0.01 80);
+  box-shadow: 0 14px 34px -12px oklch(0.61 0.16 42 / 0.34);
 }
 /* the "Claude" + time header on a tool-led turn — mirrors .msg .meta so a turn that
    opens with a tool still reads as Claude's, like a normal message block */
@@ -832,12 +890,34 @@ input,textarea{ font-family:inherit; }
    #region 같은 지시문은 시맨틱 토큰(preprocessorKeyword)이 파랑으로 덮는다 */
 .pal-cpp .hljs-type, .pal-cpp .hljs-meta{ color:var(--code-kw); }
 .pal-cs .hljs-type, .pal-cs .hljs-built_in{ color:var(--code-kw); }
+/* Verse: @속성(@editable 등)은 pal-rider에서 meta=클래스색(보라)이라 구분이 안 됐다 —
+   어노테이션다운 올리브-골드로 분리한다. (<지정자>는 .specifier_ 규칙이 구조체색으로 더 높은
+   특이도로 이긴다.) */
+/* Verse: @속성(@editable 등)은 pal-rider에서 meta=클래스색(보라)이라 구분이 안 됐다 —
+   코랄(따뜻한 주황-적)로 분리한다. (<지정자>는 .specifier_ 규칙이 구조체색으로 더 높은
+   특이도로 이긴다.) */
+/* :root에 둔다(.pal-verse 아님) — 자동완성 팝업은 document.body 아래(=.pal-verse 밖)에 떠서
+   .pal-verse 변수를 못 물려받는다. 인게임 .pal-verse는 :root에서 그대로 상속해 쓰고, 팝업의
+   @속성/<지정자> 아이콘 색(cm-completionIcon-attribute/-specifier)도 같은 값을 쓴다. */
+:root{ --verse-attr:#c0573a; --verse-spec:#5f63a8; }
+:root[data-theme="dark"]{ --verse-attr:#e29178; --verse-spec:#a9addb; }
+.pal-verse .hljs-meta{ color:var(--verse-attr); }
+/* Verse: <…> 지정자(<public>·<override>·<transacts>·<computes>…)는 원래 클래스색(보라)이라
+   구조체색(--code-type-2)으로 분리했었는데, struct/enum이 그 구조체색을 쓰게 되면서 겹쳤다 —
+   지정자 전용 슬레이트(--verse-spec)로 옮긴다(속성 코랄과 대비되는 차분한 보조색). verseLang의
+   'meta.specifier' 서브스코프가 `specifier_`(Verse 전용)를 달아줘 @어트리뷰트(plain meta)는
+   건드리지 않는다. 특이도 0,3,0 → 위의 .hljs .hljs-meta(0,2,0)를 이긴다. 모든 코드 표면 커버. */
+.fvl .hljs-meta.specifier_, .cm-content .hljs-meta.specifier_,
+.hljs .hljs-meta.specifier_, .lsp-hover .hljs-meta.specifier_{ color:var(--verse-spec, var(--code-type-2)); }
 
 /* composer */
 .composer-wrap{ flex:0 0 auto; padding:14px 28px 18px; }
 /* 컴포저(게이지·입력창)는 의도적으로 760px 고정 — 본문(.thread)은 창에 비례해
    넓어지지만, 입력 영역까지 따라 늘면 가로로 휑해져 오히려 산만하다(사용자 피드백) */
-.composer-inner{ max-width:760px; margin:0 auto; }
+/* 오른쪽 에이전트 패널을 들어낸 뒤 — 코드 모드 입력부도 채팅 탭과 같은 880px로
+   넓혀 메시지 칼럼(.thread, 88%/1400)과 어색하지 않게 맞춘다. (talk 모드는 아래
+   .chat--talk 규칙이 따로 잡는다) */
+.composer-inner{ max-width:880px; margin:0 auto; }
 /* 채팅 모드는 입력창만 살짝 넓혀(760→880px) 넓어진 본문과 균형을 맞춘다 */
 .chat--talk .composer-inner{ max-width:880px; }
 .suggest{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom:11px; }
@@ -1041,6 +1121,41 @@ input,textarea{ font-family:inherit; }
 .cc-pct{ flex:0 0 auto; font-family:var(--font-mono); font-size:10.5px; color:var(--accent-2); font-weight:600; }
 .cc-detail{ font-size:10px; color:var(--text-4); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
+/* ============================================================
+   WORK BAR — 코드 모드 컴포저 위 한 줄(할 일·서브에이전트·변경된 파일·컨텍스트 칩 +
+   클릭 시 위로 뜨는 팝오버). 예전 오른쪽 .agent 패널을 대체해 대화 칼럼을 넓힌다.
+   ============================================================ */
+.workbar-wrap{ flex:0 0 auto; padding:13px 28px 0; }
+/* 예전 컨텍스트 스트립과 동일하게 4칸이 폭을 똑같이 나눠 가진다(.ctx-strip 결) */
+.workbar{ max-width:880px; margin:0 auto; display:flex; gap:8px; }
+.wb-cell{ flex:1; min-width:0; position:relative; }
+.wb-chip{ width:100%; display:flex; align-items:center; gap:9px; padding:7px 10px; text-align:left;
+  background:var(--surface); border:1px solid var(--line); border-radius:10px; cursor:pointer;
+  transition:background .14s, box-shadow .14s, border-color .14s; }
+.wb-chip:hover{ border-color:var(--accent-line); box-shadow:var(--hover-ring); }
+.wb-chip.on{ border-color:var(--accent-line); box-shadow:var(--hover-ring); background:var(--bg); }
+/* 칩 안 텍스트는 .cc-text/.cc-top/.cc-label/.cc-pct/.cc-detail(컨텍스트 스트립)을 그대로
+   재사용해 동일한 결을 낸다. 왼쪽 슬롯만 칩별 아이콘(할 일·서브·파일) 또는 링(컨텍스트). */
+.wb-ic{ width:19px; height:19px; flex:0 0 19px; display:grid; place-items:center; color:var(--text-3); }
+.wb-chip.on .wb-ic{ color:var(--accent-2); }
+.wb-chip.on .cc-ring::after{ background:var(--bg); }
+
+/* popover — 칩 칸 바로 위로 떠오른다(모델 선택 메뉴와 같은 카드/그림자). 오른쪽 끝
+   칩(컨텍스트)만 오른쪽 정렬해 컬럼 밖으로 새지 않게 한다. */
+.wb-pop{ position:absolute; bottom:calc(100% + 9px); left:0; width:320px; max-width:86vw;
+  max-height:340px; overflow-y:auto; overscroll-behavior:contain;
+  background:var(--surface); border:1px solid var(--line-2); border-radius:13px;
+  box-shadow:0 18px 44px -12px rgba(40,30,20,0.34); padding:8px; z-index:40;
+  animation:rise .15s cubic-bezier(.2,.8,.2,1) both; }
+.wb-pop.r{ left:auto; right:0; }
+.wb-pop-h{ display:flex; align-items:center; gap:8px; padding:5px 8px 9px; }
+.wb-pop-h .t{ font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--text-2); }
+.wb-pop-h .c{ margin-left:auto; font-family:var(--font-mono); font-size:11px; color:var(--text-3); }
+.wb-pop-list{ display:flex; flex-direction:column; gap:3px; }
+.wb-ctx-list{ display:flex; flex-direction:column; gap:6px; }
+/* 팝오버 배경(surface)과 구분되도록 컨텍스트 칩은 bg로, 세로로 쌓이게 flex 해제 */
+.wb-ctx-list .ctx-chip{ flex:0 0 auto; background:var(--bg); }
+
 /* reusable hover tooltip that floats ABOVE the element (composer controls) */
 .has-tip{ position:relative; }
 .has-tip::after{
@@ -1217,14 +1332,9 @@ input,textarea{ font-family:inherit; }
 .q-submit:hover{ background:var(--accent-2); }
 .q-submit:disabled{ opacity:.45; cursor:default; }
 
-/* ============================== AGENT PANEL ============================== */
-.agent{ width:392px; flex:0 0 392px; background:var(--bg); border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
-.ag-head{ height:52px; flex:0 0 52px; display:flex; align-items:center; gap:10px; padding:0 16px 0 20px; border-bottom:1px solid var(--line); }
-.ag-head .t{ font-size:13.5px; font-weight:600; letter-spacing:-.01em; white-space:nowrap; }
-.ag-head .spacer{ flex:1; }
-.ag-head .ic{ color:var(--text-3); padding:7px; border-radius:8px; transition:background .12s,color .12s; }
-.ag-head .ic:hover{ background:var(--surface-2); color:var(--text); }
-
+/* ===================== 상태칩 · 작업 목록 행 (공유) =====================
+   예전 오른쪽 에이전트 패널에서 왔다. 지금은 채팅 헤더의 상태칩과 작업 바 팝오버
+   (할 일/서브에이전트/변경된 파일)가 이 스타일을 공유한다. */
 .status-pill{ display:flex; align-items:center; gap:7px; font-size:12px; font-weight:500; padding:5px 11px 5px 9px; border-radius:99px; border:1px solid var(--line-2); white-space:nowrap; }
 .status-pill .d{ width:7px; height:7px; border-radius:99px; }
 .status-pill.analyzing{ color:var(--blue); background:var(--blue-soft); border-color:transparent; }
@@ -1237,15 +1347,6 @@ input,textarea{ font-family:inherit; }
 .status-pill.error .d{ background:var(--red); }
 .status-pill.idle{ color:var(--text-3); }
 .status-pill.idle .d{ background:var(--text-4); }
-
-/* flex column이라 마지막 섹션(.grow — 변경된 파일)이 패널의 남는 세로 공간을 전부
-   차지할 수 있다; 내용이 패널보다 길어지면 예전처럼 패널 전체가 스크롤 */
-.ag-scroll{ flex:1; overflow-y:auto; min-height:0; display:flex; flex-direction:column; }
-.ag-sec{ flex:0 0 auto; padding:18px 20px; border-bottom:1px solid var(--line); }
-.ag-sec.grow{ flex:1 1 auto; display:flex; flex-direction:column; }
-.ag-sec .sh{ display:flex; align-items:center; gap:8px; margin-bottom:13px; }
-.ag-sec .sh .lbl{ font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--text-2); white-space:nowrap; }
-.ag-sec .sh .count{ margin-left:auto; font-family:var(--font-mono); font-size:11px; color:var(--text-3); }
 
 .task-card{ background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:13px 14px; }
 .task-card .q{ font-size:13px; line-height:1.55; color:var(--text-2); white-space:pre-wrap; }
@@ -1410,6 +1511,11 @@ input,textarea{ font-family:inherit; }
 }
 .ftbadge.generic{ color:var(--text-4); background:color-mix(in oklab, var(--text-4) 13%, transparent); }
 
+/* Modern file glyph (Material Icon Theme SVG) — replaces the old letter badge. The span
+   is sized by the caller (style width/height); the inlined SVG (viewBox-only) fills it. */
+.fticon{ flex:0 0 auto; display:inline-grid; place-items:center; line-height:0; }
+.fticon svg{ width:100%; height:100%; display:block; }
+
 /* ============================== FILE VIEWER CARD ============================== */
 .fv-overlay{
   position:absolute; inset:0; z-index:60;
@@ -1569,7 +1675,7 @@ input,textarea{ font-family:inherit; }
    색은 컨테이너(.fv-code)의 언어별 팔레트 변수를 따라간다. type-2/event/kw/dep/esc/
    inactive/plain은 Rider 언어(C#·C++) 전용 분류 — riderSemClass가 붙인다 */
 .fvl .sem-type, .lsp-hover .sem-type{ color:var(--code-type); }
-.fvl .sem-type2, .lsp-hover .sem-type2{ color:var(--code-type-2, var(--code-type)); }
+.fvl .sem-type2, .lsp-hover .sem-type2, .hljs .sem-type2{ color:var(--code-type-2, var(--code-type)); }
 .fvl .sem-fn, .lsp-hover .sem-fn{ color:var(--code-fn); }
 .fvl .sem-member, .lsp-hover .sem-member{ color:var(--code-member); }
 .fvl .sem-const, .lsp-hover .sem-const{ color:var(--code-const); }
@@ -1628,14 +1734,135 @@ input,textarea{ font-family:inherit; }
 .cm-host .cm-editor{ height:100%; }
 .cm-host .cm-editor.cm-focused{ outline:none; }
 /* CM hover 툴팁: CM 기본 크롬(테두리·배경)을 숨기고 .lsp-hover 카드만 보이게.
-   카드 위치는 CM 툴팁이 잡으므로 .lsp-hover의 position:fixed를 static으로 덮는다. */
+   카드 위치는 CM 툴팁이 잡으므로 .lsp-hover의 position:fixed를 static으로 덮는다.
+   주의: 예전엔 투명 패딩+음수 마진으로 "다리"를 만들었는데, CM이 카드 위치를 잴 때 그 패딩까지
+   포함해서 — 패딩만큼 카드가 토큰에서 떨어져 버렸다(딱 안 붙음). 그래서 패딩 다리는 제거하고
+   카드가 토큰에 바로 붙게 둔다. 들어가기 쉬움은 아래 cmHoverKeepAlive(유예 시간)로 처리한다. */
 .cm-tooltip.cm-tooltip-hover{ background:transparent !important; border:none !important; }
 .cm-tooltip .cm-lsp-hover{ position:static; }
+
+/* ── CM 자동완성 팝업 — 호버 카드처럼 글래스(반투명 + blur)하고 모던하게.
+   CM 기본 크롬을 덮는다: 두 클래스 셀렉터로 특이도를 맞추고, 핵심 시각 속성은 주입 순서와
+   무관하도록 !important(.cm-tooltip-hover와 같은 방식). 라벨은 앱 시그니처 산세리프(Wanted
+   Sans), 종류는 CM 기본 수학 글리프를 죽이고 코드 팔레트 컬러 도트로 표시. */
+.cm-tooltip.cm-tooltip-autocomplete{
+  background:color-mix(in oklab, var(--bg) 74%, transparent) !important;
+  backdrop-filter:blur(18px) saturate(1.35); -webkit-backdrop-filter:blur(18px) saturate(1.35);
+  border:1px solid var(--line-2) !important; border-radius:16px;
+  box-shadow:0 24px 56px -20px rgba(30,22,14,.5), 0 3px 12px -5px rgba(30,22,14,.22);
+  padding:7px; overflow:hidden; animation:fade .12s ease both;
+}
+/* 항목은 코드 식별자 → JetBrains Mono(--font-mono, 앱의 code/paths 전용 폰트). docs 패널만 산세리프 */
+.cm-tooltip.cm-tooltip-autocomplete > ul{
+  max-height:min(360px, 52vh); font-family:var(--font-mono); font-size:14px;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li{
+  display:flex; align-items:center; padding:9px 14px; margin:1px 0; border-radius:10px; overflow:hidden;
+  color:var(--text-2); line-height:1.5; cursor:default; transition:background .08s ease;
+}
+.cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]{
+  background:color-mix(in oklab, var(--accent) 16%, transparent) !important; color:var(--text);
+}
+/* 종류 = 작은 라운드 배지 + 종류 SVG 아이콘(mask-image, 색은 배지 color를 그대로 물려받음).
+   색 = 의미 그룹 4 + 회색(같은 색 안은 아이콘 모양으로 구분):
+   🔵 호출(함수·메서드) · 🟢 타입(클래스·구조체·인터페이스·타입·네임스페이스·열거형)
+   🟣 값(변수·필드·상수) · 🟠 언어(키워드·연산자) · ⚪ 텍스트.
+   아이콘: 함수=ƒx · 메서드=톱니 · 변수=(x)채움 · 필드=태그 · 클래스=코드파일 · 구조체={} ·
+   인터페이스=플러그 · 열거=목록 · 타입=T · 모듈=패키지 · 키워드=열쇠 · 연산자=± · 상수=자물쇠 · 텍스트=Aa */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon{
+  width:17px; height:17px; flex:0 0 auto; box-sizing:border-box; padding:0; margin:0 12px 0 2px; opacity:1;
+  display:flex; align-items:center; justify-content:center; border-radius:5px;
+  color:var(--text-3); background:color-mix(in oklab, var(--text-4) 15%, transparent);
+}
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon::after{
+  content:''; width:14px; height:14px; background-color:currentColor; font-size:0;
+  -webkit-mask:center / contain no-repeat; mask:center / contain no-repeat;
+}
+/* 색 그룹 */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-function,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-method{ color:var(--code-fn); background:color-mix(in oklab, var(--code-fn) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-class,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-struct,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-interface,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-type,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-namespace,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-enum{ color:var(--code-type); background:color-mix(in oklab, var(--code-type) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-variable,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-property,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-constant{ color:var(--code-member); background:color-mix(in oklab, var(--code-member) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-keyword,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-builtin,
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-operator{ color:var(--code-kw); background:color-mix(in oklab, var(--code-kw) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-text{ color:var(--text-4); background:color-mix(in oklab, var(--text-4) 15%, transparent); }
+/* 종류 아이콘 (mask-image — Lucide/Tabler/MDI 정품 path. stroke='black'은 마스크 알파용일 뿐,
+   실제 색은 배지 color(위 그룹색)가 background-color:currentColor로 들어간다) */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-function::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2'/><path d='M5 12h6'/><path d='M15 12l6 6'/><path d='M15 18l6 -6'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 19a2 2 0 0 0 2 2c2 0 2 -4 3 -9s1 -9 3 -9a2 2 0 0 1 2 2'/><path d='M5 12h6'/><path d='M15 12l6 6'/><path d='M15 18l6 -6'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-method::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z'/><path d='M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z'/><path d='M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-variable::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M20.41,3C21.8,5.71 22.35,8.84 22,12C21.8,15.16 20.7,18.29 18.83,21L17.3,20C18.91,17.57 19.85,14.8 20,12C20.34,9.2 19.89,6.43 18.7,4L20.41,3M5.17,3L6.7,4C5.09,6.43 4.15,9.2 4,12C3.66,14.8 4.12,17.57 5.3,20L3.61,21C2.21,18.29 1.65,15.17 2,12C2.2,8.84 3.3,5.71 5.17,3M12.08,10.68L14.4,7.45H16.93L13.15,12.45L15.35,17.37H13.09L11.71,14L9.28,17.33H6.76L10.66,12.21L8.53,7.45H10.8L12.08,10.68Z'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M20.41,3C21.8,5.71 22.35,8.84 22,12C21.8,15.16 20.7,18.29 18.83,21L17.3,20C18.91,17.57 19.85,14.8 20,12C20.34,9.2 19.89,6.43 18.7,4L20.41,3M5.17,3L6.7,4C5.09,6.43 4.15,9.2 4,12C3.66,14.8 4.12,17.57 5.3,20L3.61,21C2.21,18.29 1.65,15.17 2,12C2.2,8.84 3.3,5.71 5.17,3M12.08,10.68L14.4,7.45H16.93L13.15,12.45L15.35,17.37H13.09L11.71,14L9.28,17.33H6.76L10.66,12.21L8.53,7.45H10.8L12.08,10.68Z'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-property::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z'/><circle cx='7.5' cy='7.5' r='1' fill='black' stroke='none'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z'/><circle cx='7.5' cy='7.5' r='1' fill='black' stroke='none'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-class::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2'/><path d='M10.5 12l-2 2.2l2 2.2'/><path d='M13.5 12l2 2.2l-2 2.2'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 3v4a1 1 0 0 0 1 1h4'/><path d='M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2'/><path d='M10.5 12l-2 2.2l2 2.2'/><path d='M13.5 12l2 2.2l-2 2.2'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-struct::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1'/><path d='M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1'/><path d='M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-interface::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22v-5'/><path d='M15 8V2'/><path d='M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z'/><path d='M9 8V2'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22v-5'/><path d='M15 8V2'/><path d='M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z'/><path d='M9 8V2'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-enum::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 5h.01'/><path d='M3 12h.01'/><path d='M3 19h.01'/><path d='M8 5h13'/><path d='M8 12h13'/><path d='M8 19h13'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M3 5h.01'/><path d='M3 12h.01'/><path d='M3 19h.01'/><path d='M8 5h13'/><path d='M8 12h13'/><path d='M8 19h13'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-type::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 4v16'/><path d='M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2'/><path d='M9 20h6'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 4v16'/><path d='M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2'/><path d='M9 20h6'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-namespace::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z'/><path d='M12 22V12'/><polyline points='3.29 7 12 12 20.71 7'/><path d='m7.5 4.27 9 5.15'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z'/><path d='M12 22V12'/><polyline points='3.29 7 12 12 20.71 7'/><path d='m7.5 4.27 9 5.15'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-keyword::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z'/><circle cx='16.5' cy='7.5' r='1' fill='black' stroke='none'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z'/><circle cx='16.5' cy='7.5' r='1' fill='black' stroke='none'/></svg>"); }
+/* Verse 공식 built-in(타입 int/float… · 리터럴 true/false) — # 해시 아이콘(열쇠 대신), 색은 위 keyword와 같은 주황 */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-builtin::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><line x1='4' x2='20' y1='9' y2='9'/><line x1='4' x2='20' y1='15' y2='15'/><line x1='10' x2='8' y1='3' y2='21'/><line x1='16' x2='14' y1='3' y2='21'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><line x1='4' x2='20' y1='9' y2='9'/><line x1='4' x2='20' y1='15' y2='15'/><line x1='10' x2='8' y1='3' y2='21'/><line x1='16' x2='14' y1='3' y2='21'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-operator::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 5.2v7.2'/><path d='M8.2 8.8h7.6'/><path d='M8.2 17.6h7.6'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 5.2v7.2'/><path d='M8.2 8.8h7.6'/><path d='M8.2 17.6h7.6'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-constant::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='11' x='3' y='11' rx='2.5'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='18' height='11' x='3' y='11' rx='2.5'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/></svg>"); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-text::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16'/><path d='M22 9v7'/><path d='M3.304 13h6.392'/><circle cx='18.5' cy='12.5' r='3.5'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16'/><path d='M22 9v7'/><path d='M3.304 13h6.392'/><circle cx='18.5' cy='12.5' r='3.5'/></svg>"); }
+/* Verse 전용 — @속성(at-sign)·<지정자>(꺾쇠 ‹ ›, Lucide). @는 인게임 색 그대로(코랄 --verse-attr).
+   <지정자>는 '접근/효과/선언' 텍스트 대신 아이콘 '색'으로 그룹을 구분한다(라벨 글자는 흰색 유지) —
+   접근=파랑 / 효과=보라 / 선언=틸. 아이콘 모양(꺾쇠)은 셋 다 같고, 색만 다르다. */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-attribute{ color:var(--verse-attr); background:color-mix(in oklab, var(--verse-attr) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-spec-access{ color:var(--blue); background:color-mix(in oklab, var(--blue) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-spec-effect{ color:var(--violet); background:color-mix(in oklab, var(--violet) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-spec-decl{ color:var(--teal); background:color-mix(in oklab, var(--teal) 16%, transparent); }
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionIcon-attribute::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='4'/><path d='M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='4'/><path d='M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94'/></svg>"); }
+/* 세 지정자 그룹은 꺾쇠 마스크를 공유한다(색만 위에서 다르게) */
+.cm-tooltip.cm-tooltip-autocomplete [class*="cm-completionIcon-spec-"]::after{ -webkit-mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m9 7-5 5 5 5'/><path d='m15 7 5 5-5 5'/></svg>"); mask-image:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m9 7-5 5 5 5'/><path d='m15 7 5 5-5 5'/></svg>"); }
+/* 라벨 = 이름(코드 폰트 강제 — CM 구조상 ul 상속이 안 먹는 경우가 있어 라벨에 직접 지정).
+   한 줄 말줄임. 글자색은 전부 흰색(--text) — 종류 구분은 왼쪽 컬러 도트가 담당한다. */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionLabel{
+  flex:0 0 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  font-family:var(--font-mono); font-weight:450; color:var(--text);
+}
+/* 매칭 글자만 굵게(흰색 유지, CM 기본 밑줄 제거) */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionMatchedText{
+  font-weight:700; color:inherit; text-decoration:none;
+}
+/* detail = 타입/시그니처(모노, 오른쪽으로 밀어 흐릿하게) — 이름은 산세리프, 타입은 코드체 대비 */
+/* 시그니처(params/fields) = 이름 바로 뒤에 흐리게. 길면 제일 먼저 말줄임된다 */
+.cm-tooltip.cm-tooltip-autocomplete .cm-completionDetail{
+  flex:0 1 auto; min-width:0;
+  font-family:var(--font-mono); font-style:normal; font-size:13px; color:var(--text-4);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+/* 리스트 스크롤바 — 가늘고 은은하게(앱 톤) */
+.cm-tooltip.cm-tooltip-autocomplete > ul::-webkit-scrollbar{ width:8px; }
+.cm-tooltip.cm-tooltip-autocomplete > ul::-webkit-scrollbar-thumb{
+  background:color-mix(in oklab, var(--text-4) 45%, transparent); border-radius:99px; border:2px solid transparent; background-clip:padding-box;
+}
+/* 문서 사이드 패널(info) — 같은 글래스 톤의 프로즈 */
+.cm-tooltip.cm-completionInfo{
+  background:color-mix(in oklab, var(--bg) 80%, transparent);
+  backdrop-filter:blur(18px) saturate(1.35); -webkit-backdrop-filter:blur(18px) saturate(1.35);
+  border:1px solid var(--line-2); border-radius:12px;
+  margin:0 8px; padding:10px 13px; max-width:340px;
+  font-family:var(--font-sans); font-size:12.5px; line-height:1.55; color:var(--text-3);
+  box-shadow:0 16px 40px -18px rgba(30,22,14,.5);
+}
+
 /* 정의 이동 도착 줄 깜빡임 — 뷰어의 .fvl.flash와 같은 애니메이션 */
 .cm-flash{ animation:fvl-flash 1.5s ease-out; }
 /* Ctrl(정의 이동 모드) — 포인터 커서 + 줄 hover 강조 (뷰어의 .fv-pre.lsp-ctrl와 동일) */
 .cm-host.lsp-ctrl .cm-content{ cursor:pointer; }
 .cm-host.lsp-ctrl .cm-line:hover{ background:color-mix(in oklab, var(--accent) 8%, transparent); }
+/* 읽기 모드 — 편집을 못 하므로 텍스트 I-빔 대신 기본 화살표(호버로 타입만 보는 흐름에 맞춤).
+   단 Ctrl(정의 이동)일 땐 위 lsp-ctrl 포인터를 유지해야 하므로 더 높은 특이도로 되살린다. */
+.cm-host.mode-read .cm-content{ cursor:default; }
+.cm-host.mode-read.lsp-ctrl .cm-content{ cursor:pointer; }
 
 /* CM 파일 내 검색(Ctrl+F) — 비-CM 뷰어와 같은 .fv-find 플로팅 바를 그대로 쓴다(우리 톤 통일).
    .cm-host 기준 좌상단 근처에 띄우고, 매치는 직접 칠한다(아래 .cm-find-hit/-cur). */
@@ -1699,7 +1926,7 @@ input,textarea{ font-family:inherit; }
   display:flex; flex-direction:column; gap:9px; align-items:stretch;
   background:var(--bg); border:1px solid var(--line-2); border-radius:14px;
   box-shadow:0 24px 56px -20px rgba(30,22,14,.5), 0 3px 12px -5px rgba(30,22,14,.2);
-  padding:13px 15px; user-select:text; cursor:auto;
+  padding:13px 15px; user-select:text; cursor:default;
   animation:fade .12s ease both; /* 등장은 살짝 페이드, 제거는 즉시 */ }
 .lsp-hover .codeblock{ border:none; background:var(--surface); margin:0; border-radius:9px; }
 .lsp-hover .codeblock .cb-head{ display:none; }
@@ -1732,6 +1959,8 @@ input,textarea{ font-family:inherit; }
 .lsp-hover .lh-kind.k-member{ color:var(--code-member); background:color-mix(in oklab, var(--code-member) 14%, transparent); }
 .lsp-hover .lh-kind.k-var{ color:var(--code-num); background:color-mix(in oklab, var(--code-num) 14%, transparent); }
 .lsp-hover .lh-kind.k-param{ color:var(--code-str); background:color-mix(in oklab, var(--code-str) 16%, transparent); }
+/* @attribute 칩 — 코드 본문의 어트리뷰트 색(코랄)과 동일하게, struct 칩(연보라)과 겹치지 않도록 */
+.lsp-hover .lh-kind.k-attr{ color:var(--verse-attr, var(--code-meta)); background:color-mix(in oklab, var(--verse-attr, var(--code-meta)) 16%, transparent); }
 /* 메모리 정보 알약 (size·align·offset) — 작은 라벨 + 굵은 모노 값, 줄 아래 전폭 밑줄 */
 .lsp-hover .lh-fact{ display:inline-flex; align-items:baseline; gap:6px; padding:3px 10px;
   border-radius:99px; background:color-mix(in oklab, var(--text-3) 10%, transparent); }
@@ -1743,6 +1972,10 @@ input,textarea{ font-family:inherit; }
 .lsp-hover .lh-head{ flex-wrap:wrap; row-gap:4px; }
 /* NAME 행 — 같은 코드 칩이되 카드의 주인공이라 살짝만 크게 */
 .lsp-hover .lh-name-row code.inline{ font-size:16px; font-weight:600; }
+/* 변수/매개변수/로컬/상수 이름은 타입 색 승격을 막고 기본 식별자 색으로 — 동명 에셋 타입
+   (예: PascalCase `Player` 클래스)과 겹쳐도 보라색이 되지 않게 (highlighter가 칠한 색을 덮어씀) */
+.lsp-hover .lh-name-row.nm-plain code.inline,
+.lsp-hover .lh-name-row.nm-plain code.inline *{ color:var(--text-2); }
 .lsp-hover .lh-sig{ background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:9px 12px; }
 .lsp-hover .lh-sig code{ display:block; font-family:var(--font-mono); font-size:14px; line-height:1.6;
   white-space:pre-wrap; word-break:break-word; color:var(--text-2); }
@@ -1757,6 +1990,24 @@ input,textarea{ font-family:inherit; }
   color:var(--text-3); background:color-mix(in oklab, var(--text-3) 13%, transparent);
   padding:2.5px 8px; border-radius:99px; justify-self:start; flex:0 0 auto; white-space:nowrap; }
 .lsp-hover .lh-spec-v{ min-width:0; display:flex; flex-direction:column; gap:6px; align-items:flex-start; }
+/* Verse 지정자/속성 토큰 — 한 줄에 가로로 흐르고(넘치면 줄바꿈), 토큰마다 native title 설명 */
+.lsp-hover .lh-spec-toks{ display:flex; flex-wrap:wrap; align-items:baseline; gap:3px 8px; min-width:0; }
+.lsp-hover .lh-spec-tok{ display:inline-flex; }
+.lsp-hover .lh-spec-tok p{ margin:0; }
+/* 카드 머리(종류 칩)·스펙 그리드(NAME·ACCESS·TYPE·CLASS…)는 기본 화살표 커서로 — 호버 설명은
+   뜨지만 ?(help)나 I빔(text) 대신 보통 모양으로 통일한다. (data-tip만 달고 전역 .has-tip는 안 씀) */
+.lsp-hover .lh-kindrow, .lsp-hover .lh-spec{ cursor:default; }
+/* 카드 본문 래퍼 — 카드(.lsp-hover)의 행 레이아웃을 그대로 받고, 토큰 호버 이벤트를 위임받는다 */
+.lsp-hover .lh-body{ display:flex; flex-direction:column; gap:9px; align-items:stretch; min-width:0; }
+/* 토큰 설명 — 카드 밖(아래/위)에 한 곳에 떠서 글자만 바뀐다. 앱 디자인 카드, pointer-events:none이라
+   호버 흐름을 방해하지 않고, 토큰마다 새로 마운트되지 않아(요소 유지) 깜빡임이 없다. */
+.lh-tokdesc{ position:fixed; z-index:2147483600; transform:translateX(-50%);
+  max-width:344px; max-height:44vh; overflow:hidden; padding:9px 13px; border-radius:11px;
+  background:var(--surface-2); border:1px solid var(--line-2);
+  box-shadow:0 16px 36px -16px rgba(0,0,0,.55), 0 2px 9px -4px rgba(0,0,0,.32);
+  color:var(--text-2); font-size:12.5px; line-height:1.55; font-weight:450;
+  pointer-events:none; white-space:pre-wrap; word-break:keep-all;
+  animation:fade .1s ease both; }
 /* 매개변수 줄 = 코드 + 문서 설명(@param) — 인라인 흐름이라 설명이 항상 코드
    옆에서 시작하고, 길면 통째로 떨어지는 대신 글자 단위로 다음 줄에 이어진다 */
 .lsp-hover .lh-pline{ display:block; min-width:0; line-height:1.6; }
@@ -2246,6 +2497,17 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 .skill-knob{ position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.25); transition:transform .16s cubic-bezier(.2,.8,.2,1); }
 .skill-toggle.on .skill-knob{ transform:translateX(16px); }
 
+/* Verse 행 펼치기(디스클로저) + 하위 옵션 행 (Settings ▸ Code) — 행을 클릭하면 셰브론이
+   돌고 아래에 'ext-sub' 옵션 행이 펼쳐진다. 클릭 가능함을 알리려 skill 행과 같은 강조 호버. */
+.ext-item.disc-row{ position:relative; cursor:pointer; transition:background .14s, border-color .14s, box-shadow .14s; }
+.ext-item.disc-row:hover{ z-index:1; background:var(--surface-2); border-color:var(--accent-line); box-shadow:var(--shadow-sm); }
+.ext-chev{ flex:0 0 auto; display:inline-flex; align-items:center; color:var(--text-4); margin:0 -5px 0 -2px; transition:transform .16s ease, color .14s; }
+.ext-item.disc-row.open .ext-chev{ transform:rotate(90deg); color:var(--text-2); }
+.ext-item.ext-sub{ padding:12px 16px 13px 34px; background:var(--inset); align-items:center; }
+.ext-sub-name{ font-size:13px; font-weight:600; color:var(--text-2); }
+.ext-sub-desc{ white-space:normal; overflow:visible; text-overflow:clip; margin-top:4px; line-height:1.55; }
+.ext-sub-desc code{ font-family:var(--font-mono); color:var(--accent-2); }
+
 /* version manager */
 .sec-head{ display:flex; align-items:flex-end; gap:10px; margin-bottom:13px; }
 .sec-title{ font-size:14px; font-weight:600; letter-spacing:-.01em; }
@@ -2416,6 +2678,24 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 .pr-cancel:hover{ background:var(--surface-3); }
 .pr-save{ padding:10px 20px; border-radius:10px; font-size:13.5px; font-weight:600; background:var(--accent); color:var(--on-accent); transition:background .14s; }
 .pr-save:hover{ background:var(--accent-2); }
+.pr-save:disabled{ opacity:.55; cursor:default; }
+/* 파일 작업 카드(FileOpModal) — .pr-* 재사용 + 단일 입력 / 삭제 확인 / 에러 / 위험 버튼 */
+.fop-modal{ width:min(440px, 100%); }
+.pr-input{
+  width:100%; padding:11px 13px; border-radius:11px;
+  background:var(--inset); border:1px solid var(--line-2); color:var(--text);
+  font-family:inherit; font-size:14px;
+}
+.pr-input:focus{ outline:none; border-color:var(--accent-line); box-shadow:0 0 0 3px var(--accent-soft); }
+.pr-input::placeholder{ color:var(--text-4); }
+.fop-confirm{ font-size:13.5px; line-height:1.6; color:var(--text-2); }
+.fop-confirm b{ color:var(--text); font-weight:650; }
+.fop-hint{ font-size:12px; color:var(--text-4); margin-top:4px; }
+.fop-err{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--red); }
+.fop-err svg{ flex:0 0 auto; }
+.pr-ic.danger{ background:var(--red-soft); color:var(--red); }
+.pr-save.danger{ background:var(--red); color:#fff; }
+.pr-save.danger:hover{ background:var(--red); filter:brightness(1.08); }
 
 /* 프롬프트가 설정된 채팅 — 사이드바 제목 옆 글리프. 제목이 길어도 글리프가
    잘리지 않게 t1을 flex로 바꾸고 말줄임은 안쪽 span이 맡는다. overflow는
@@ -2508,9 +2788,7 @@ body.rzm-resizing, body.rzm-resizing *{ user-select:none !important; }
 @keyframes rise{ from{ opacity:0; transform:translateY(6px); } to{ opacity:1; transform:none; } }
 @keyframes fade{ from{ opacity:0; } to{ opacity:1; } }
 
-@media (max-width:1180px){ .agent{ width:330px; flex-basis:330px; } }
 @media (max-width:1000px){ .sidebar{ width:210px; flex-basis:210px; } }
-@media (max-width:860px){ .agent{ display:none; } }
 @media (max-width:760px){ .lg-brand{ display:none; } }
 
 /* ============================================================

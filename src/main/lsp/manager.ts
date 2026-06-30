@@ -5,11 +5,40 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { StdioRpc } from './jsonrpc'
-import { DOWNLOADS, install, installState, installedBin, uninstall } from './install'
+import { DOWNLOADS, install, installState, installedBin, uninstall, killHolders } from './install'
 import { ensureUeClangDb, ueDbDir, ueRoot } from './ue'
+import {
+  verseExePath,
+  verseSourcePath,
+  verseProjectRoot,
+  verseWorkspaceFolders,
+  verseDeclHover,
+  verseLocalHover,
+  verseDocAt,
+  verseKeywordDoc,
+  verseSymbolDoc,
+  setVerseExe,
+  clearVerseExe
+} from './verse'
+import {
+  verseMemberContext,
+  verseHasType,
+  verseTypeFromHover,
+  verseResolveTypeRegex,
+  verseTypeMembers,
+  verseScopeCompletions,
+  verseExtMethods,
+  verseIsTypePosition,
+  verseBuiltinTypeItems,
+  verseRegistry as verseMemberDbRegistry
+} from './verseMemberDb'
 import { getCached, setCached, gcDeadBuckets } from './semcache'
 import { APP_HOME } from '../engine/versions'
+import { VERSE_BUILTIN_KIND } from '@shared/protocol'
 import type {
+  LspCompletionItem,
+  LspCompletionList,
+  VerseRegistry,
   LspHoverResult,
   LspInstallProgress,
   LspLocation,
@@ -42,13 +71,19 @@ interface ServerDef {
   id: string
   label: string
   langs: string // display name of the covered languages (settings list)
-  kind: 'bundled' | 'download'
+  // bundled = ships in node_modules · download = fetched on demand (install.ts) ·
+  // external = a user-supplied binary we can't ship/download (Verse: Epic's verse-lsp.exe)
+  kind: 'bundled' | 'download' | 'external'
   exts: Record<string, string> // extension → LSP languageId
   requires?: string // external prerequisite, shown in settings (e.g. .NET SDK)
   /** how to launch the server for a given project root, or null when its
    *  binary/module is missing. `root` lets clangd point at the project's
    *  out-of-tree compile DB; bundled servers ignore it. */
   command(root: string): SpawnPlan | null
+  /** workspace folders to send at `initialize`, or null to use the default (the single
+   *  project root). Verse returns the source package + API digest folders parsed from the
+   *  project's .vproject so the server can resolve cross-package symbols. */
+  workspaceFoldersFor?(root: string): { uri: string; name: string }[] | null
   initializationOptions?(): unknown
   /** post-initialize hook — Roslyn doesn't auto-discover .sln/.csproj, so we tell it
    *  which projects to open here (after `initialized`). Other servers don't need it. */
@@ -154,6 +189,14 @@ interface ServerHandle {
   // the server's semanticTokens legend (token type names + modifier names) from the
   // initialize result — null when the server doesn't do semantic highlighting
   semLegend: { types: string[]; mods: string[] } | null
+  // the server's completion trigger characters (e.g. Verse '.') from the initialize
+  // result's completionProvider — [] when it completes but lists no triggers, null when
+  // the server has no completion provider at all (so we skip the request entirely)
+  complTriggers: string[] | null
+  // id of the most recent in-flight textDocument/completion (interactive-while-typing). A
+  // newer keystroke cancels it via $/cancelRequest so the server isn't stuck re-parsing the
+  // full document for a popup the user has already typed past. undefined when none in flight.
+  lastComplId?: number
 }
 
 // Resolve a file that ships in the app's node_modules. In a packaged build the
@@ -192,6 +235,30 @@ function killTree(child: ChildProcess): void {
   } catch {
     /* already gone */
   }
+}
+
+// verse-lsp's hover for a type *reference* is the bare `(/path:)name<specs>` with no kind
+// keyword, so the renderer's parseVerseSig labels it the generic 'Type'. Once definition tells
+// us the real kind, prepend it to the fenced signature so the card reads 'Class'/'Struct'/… and
+// shows e.g. `class component<…>`. No-op if the sig already starts with a declaration keyword.
+function injectVerseKind(md: string, kind: string): string {
+  return md.replace(/^```verse\n([^\n]*)/, (full, line: string) =>
+    /^\s*(?:class|struct|enum|interface|module)\b/.test(line) ? full : '```verse\n' + kind + ' ' + line
+  )
+}
+
+// The type from a verse-lsp hover signature (```verse\n(/qual:)name<specs>:type\n```) — fills the
+// Type row of a synthesized local/parameter card (verse-lsp gives a `:type` at use sites). '' when
+// there's no `:type` part.
+function verseHoverType(md: string | null): string {
+  const m = /```verse\n([^\n]*)/.exec(md ?? '')
+  if (!m) return ''
+  let s = m[1].trim()
+  s = s.replace(/^(?:var|set)\s+/, '') // strip leading var/set
+  s = s.replace(/^\(\/[^()]*?:\)\s*/, '') // strip (/Module/Path:)
+  s = s.replace(/^[A-Za-z_]\w*(?:<[^>]*>)*\s*/, '') // strip name + <specs>
+  const t = /^:\s*(.+)$/.exec(s)
+  return t ? t[1].trim() : ''
 }
 
 const SERVERS: ServerDef[] = [
@@ -279,6 +346,25 @@ const SERVERS: ServerDef[] = [
       }
       return { cmd: bin, args }
     }
+  },
+  {
+    id: 'verse',
+    label: 'Verse',
+    langs: 'Verse',
+    kind: 'external',
+    exts: { verse: 'verse', versetest: 'verse', vson: 'verse' },
+    // Epic's verse-lsp.exe — only runnable once the user points us at their Verse.vsix /
+    // verse-lsp.exe (prepared into the app home). Null = color-only (highlight.js grammar).
+    // No special args, plain stdio — exactly how the VS Code Verse extension launches it.
+    command: () => {
+      const exe = verseExePath()
+      return exe ? { cmd: exe, args: [] } : null
+    },
+    // key the server by the UE project root (.uproject ancestor), not the deep source folder
+    rootFor: (abs, cwd) => verseProjectRoot(abs) ?? cwd,
+    // the server needs the source + Verse/UnrealEngine digest folders, discovered from the
+    // generated .vproject — without them every request times out (it can't resolve types)
+    workspaceFoldersFor: (root) => verseWorkspaceFolders(root)
   }
 ]
 
@@ -316,6 +402,125 @@ interface RawLocation {
   targetRange?: RawRange
 }
 
+interface RawCompletionItem {
+  label?: string
+  kind?: number
+  detail?: string
+  documentation?: string | { kind?: string; value?: string }
+  insertText?: string
+  insertTextFormat?: number // 2 = snippet (LSP `${1:..}` placeholders)
+  textEdit?: { newText?: string }
+  sortText?: string
+  filterText?: string
+}
+// textDocument/completion returns either a bare item array or a CompletionList wrapper
+type RawCompletion = RawCompletionItem[] | { items?: RawCompletionItem[]; isIncomplete?: boolean } | null
+
+/** Normalize a server completion response into our flat list (null when there's nothing usable). */
+function mapCompletion(r: RawCompletion): LspCompletionList | null {
+  if (!r) return null
+  const rawItems = Array.isArray(r) ? r : Array.isArray(r.items) ? r.items : []
+  const isIncomplete = Array.isArray(r) ? false : !!r.isIncomplete
+  const items: LspCompletionItem[] = []
+  for (const it of rawItems) {
+    if (!it || typeof it.label !== 'string') continue
+    const doc = typeof it.documentation === 'string' ? it.documentation : it.documentation?.value
+    items.push({
+      label: it.label,
+      kind: typeof it.kind === 'number' ? it.kind : undefined,
+      detail: typeof it.detail === 'string' ? it.detail : undefined,
+      documentation: doc || undefined,
+      insertText: it.textEdit?.newText ?? it.insertText ?? it.label,
+      snippet: it.insertTextFormat === 2,
+      sortText: it.sortText,
+      filterText: it.filterText
+    })
+  }
+  return items.length ? { items, isIncomplete } : null
+}
+
+/**
+ * Merge scan-based scope candidates OVER a raw verse-lsp list: our items first (so their kinds win —
+ * a user function reads as a function, not a generic variable), then any server item whose name we
+ * don't already carry. Keeps the list `isIncomplete` when the server returned nothing (likely a cold
+ * compile) so the renderer re-queries as the user types, instead of locally filtering our scan forever.
+ *
+ * Strips two kinds of noise verse-lsp dumps into the bare-identifier scope:
+ *  • receiver-required extension methods like `(arr:[]t).RemoveElement(…)` — by NAME (`extMethods`,
+ *    scanned from the digests) plus any LSP kind=Method. Only callable as `receiver.method(…)`.
+ *  • operator definitions like `ref int += int` / `operator'+'…` — by shape: a real bare candidate's
+ *    label is `Name`, `Name(…)`, `Name[…]`, `Name<…>`, `Name:type`, or the archetype `Name {…}`;
+ *    an operator's `identifier + space + symbol` (or no leading identifier) fails BARE_IDENT.
+ * The enclosing class's OWN methods stay — they come from the scope scan (added first), not from here.
+ */
+const LSP_KIND_METHOD = 2
+const LSP_KIND_KEYWORD = 14
+const BARE_IDENT = /^[A-Za-z_]\w*(?:$|[([{<:]|\s+\{)/
+// LSP CompletionItemKinds that are TYPES — Class, Interface, Enum, Struct, TypeParameter
+const TYPE_KINDS = new Set([7, 8, 13, 22, 25])
+
+/**
+ * Type-position completion: the caret is in a `: Type` slot (parameter/return/field type), so offer
+ * TYPES ONLY — built-ins + our scope's type entries + verse-lsp items that are types (by kind, or
+ * confirmed by our registry when verse-lsp mis-tags them). Drops every variable/function/field so the
+ * user isn't offered their locals where only a type makes sense.
+ */
+function mergeVerseTypes(typeScope: LspCompletionItem[], raw: RawCompletion, reg: VerseRegistry): LspCompletionList | null {
+  const lsp = mapCompletion(raw)
+  const nameOf = (l: string): string => l.split(/[([{<]/)[0].trim()
+  const seen = new Set(typeScope.map((i) => nameOf(i.label)))
+  const items = [...typeScope]
+  if (lsp)
+    for (const it of lsp.items) {
+      if (!BARE_IDENT.test(it.label)) continue
+      const n = nameOf(it.label)
+      if (seen.has(n)) continue
+      if (!TYPE_KINDS.has(it.kind ?? -1) && !reg.kind[n]) continue // keep only types
+      seen.add(n)
+      items.push(it)
+    }
+  if (!items.length) return null
+  return { items, isIncomplete: lsp ? lsp.isIncomplete : true }
+}
+
+function mergeVerseScope(scope: LspCompletionItem[], raw: RawCompletion, extMethods: Set<string>): LspCompletionList | null {
+  const lsp = mapCompletion(raw)
+  const nameOf = (l: string): string => l.split(/[([{]/)[0].trim()
+  const seen = new Set(scope.map((i) => nameOf(i.label)))
+  const items = [...scope]
+  if (lsp)
+    for (const it of lsp.items) {
+      if (!BARE_IDENT.test(it.label)) continue // operator / non-identifier dump → not a bare candidate
+      const n = nameOf(it.label)
+      if (it.kind === LSP_KIND_METHOD || extMethods.has(n)) continue // needs a receiver → not a bare candidate
+      if (seen.has(n)) continue
+      // verse-lsp tags language built-ins/reserved (int/float/char/true/false/…) as Keyword(14);
+      // surface them with the `#` "official built-in" icon instead of the generic keyword key.
+      if (it.kind === LSP_KIND_KEYWORD) it.kind = VERSE_BUILTIN_KIND
+      seen.add(n)
+      items.push(it)
+    }
+  if (!items.length) return null
+  return { items, isIncomplete: lsp ? lsp.isIncomplete : true }
+}
+
+/** The character immediately left of an LSP position in `text` — for trigger-char detection. */
+function charBefore(text: string, pos: LspPos): string {
+  const lines = text.split('\n')
+  const line = lines[pos.line]
+  if (line == null || pos.character <= 0) return ''
+  return line.charAt(pos.character - 1)
+}
+
+/** Flatten a raw LSP hover result's `contents` (string | {value} | array) to a plain string. */
+function hoverContentString(h: { contents?: unknown } | null): string {
+  const c = h?.contents
+  if (!c) return ''
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) return c.map((x) => (typeof x === 'string' ? x : ((x as { value?: string })?.value ?? ''))).join('\n')
+  return (c as { value?: string }).value ?? ''
+}
+
 class LspManager {
   private servers = new Map<string, ServerHandle>()
 
@@ -337,6 +542,9 @@ class LspManager {
       if (st === 'installing') return 'installing'
       if (st === 'none') return 'need-install'
     }
+    // external (Verse): no binary configured yet → behave like an unsupported file
+    // (highlight.js colouring stays; no LSP features). Configured → fall through to spawn.
+    if (def.kind === 'external' && !def.command('')) return 'unsupported'
     // UE 프로젝트면 clangd용 compile_commands.json을 백그라운드로 생성/갱신 —
     // 이미 떠 있던 clangd는 'DB 없음'을 캐시하므로 생성됐을 때 재시작해 준다
     if (def.id === 'cpp') this.maybeUeDb(cwd)
@@ -384,6 +592,130 @@ class LspManager {
     if (analyzing) return { state: 'analyzing', percent }
     if (ready) return { state: 'ready', percent: null }
     return { state: 'idle', percent: null }
+  }
+
+  /**
+   * The Verse API digest folders to surface in the explorer — mirrors UEFN's VS Code view.
+   * Returns the grouped folders ({ path, name }: name like `/Verse.org` over an absolute path).
+   *
+   * Source of truth, in order: (1) the `*.code-workspace` UEFN writes in the project root —
+   * it lists exactly these folders, with the real (often global %LOCALAPPDATA%) digest paths;
+   * (2) falling back to reconstructing from a local `.vproject`. The cwd itself is dropped
+   * (already the main root) and non-existent dirs are skipped. Empty when neither exists, so
+   * non-Verse folders show nothing extra.
+   */
+  verseDigestFolders(cwd: string): { path: string; name: string }[] {
+    if (!cwd) return []
+    const folders = this.codeWorkspaceFolders(cwd) ?? this.vprojectFolders(cwd)
+    if (!folders) return []
+    const self = path.resolve(cwd).toLowerCase()
+    const out: { path: string; name: string }[] = []
+    for (const f of folders) {
+      let abs: string
+      try {
+        abs = path.resolve(cwd, f.path)
+        if (abs.toLowerCase() === self) continue // already the main root
+        if (!fs.existsSync(abs)) continue
+      } catch {
+        continue
+      }
+      out.push({ path: abs, name: f.name })
+    }
+    return out
+  }
+
+  // Parse the UEFN-generated `*.code-workspace` in the project root → its folder list. This is
+  // the same file VS Code opens, so paths/names match UEFN exactly (incl. the global digest
+  // dirs). Relative folder paths resolve against the workspace dir. null = no such file.
+  private codeWorkspaceFolders(cwd: string): { path: string; name: string }[] | null {
+    let files: string[]
+    try {
+      files = fs.readdirSync(cwd).filter((n) => n.toLowerCase().endsWith('.code-workspace'))
+    } catch {
+      return null
+    }
+    for (const n of files) {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(cwd, n), 'utf8')) as {
+          folders?: { name?: string; path?: string }[]
+        }
+        const folders = (j.folders ?? [])
+          .filter((f): f is { name?: string; path: string } => !!f.path)
+          .map((f) => ({ path: f.path, name: f.name || path.basename(f.path) }))
+        if (folders.length) return folders
+      } catch {
+        // malformed workspace file — try the next one
+      }
+    }
+    return null
+  }
+
+  /**
+   * files.exclude globs for the explorer's "Verse 위주로 보기" filter. Mirrors what UEFN's own
+   * VS Code workspace hides (*.uasset/*.umap/__ExternalActors__/Collections/…), so the tree
+   * reads like UEFN's Verse Explorer. Starts from a sensible UEFN default set, then unions the
+   * project's own `.code-workspace` files.exclude. Returns [] when this isn't a Verse project
+   * (no .code-workspace and no .vproject) — the filter toggle then never appears.
+   */
+  verseFileExcludes(cwd: string): string[] {
+    if (!cwd) return []
+    if (!this.codeWorkspaceFolders(cwd) && !verseWorkspaceFolders(cwd)) return []
+    const set = new Set<string>([
+      '**/*.uasset',
+      '**/*.umap',
+      '**/*.png',
+      '**/*.jpg',
+      '**/*.tga',
+      '**/*.vproject',
+      '_INT',
+      '__ExternalActors__',
+      '__ExternalObjects__',
+      'Collections',
+      'Developers'
+    ])
+    for (const k of this.codeWorkspaceExcludes(cwd)) set.add(k)
+    return [...set]
+  }
+
+  // The true-valued keys of `settings["files.exclude"]` in the project root's *.code-workspace.
+  private codeWorkspaceExcludes(cwd: string): string[] {
+    let files: string[]
+    try {
+      files = fs.readdirSync(cwd).filter((n) => n.toLowerCase().endsWith('.code-workspace'))
+    } catch {
+      return []
+    }
+    for (const n of files) {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(cwd, n), 'utf8')) as {
+          settings?: { 'files.exclude'?: Record<string, boolean> }
+        }
+        const ex = j.settings?.['files.exclude']
+        if (ex) {
+          return Object.entries(ex)
+            .filter(([, v]) => v)
+            .map(([k]) => k)
+        }
+      } catch {
+        // malformed workspace file — try the next one
+      }
+    }
+    return []
+  }
+
+  // Fallback: reconstruct the folder list from a `.vproject` (when no .code-workspace exists).
+  private vprojectFolders(cwd: string): { path: string; name: string }[] | null {
+    const folders = verseWorkspaceFolders(cwd)
+    if (!folders) return null
+    const out: { path: string; name: string }[] = []
+    for (const f of folders) {
+      try {
+        out.push({ path: fileURLToPath(f.uri), name: f.name })
+      } catch {
+        // skip unparsable uri
+      }
+    }
+    return out.length ? out : null
   }
 
   // clangd 서버(키=cwd)당 한 번만 — generate가 끝나 'generated'면 그 서버를 재시작.
@@ -522,6 +854,8 @@ class LspManager {
     if (!def) return null
     // 설치형(C#/C++)은 아직 안 받았으면 미리 띄울 수 없다 — 사용자가 설정에서 설치
     if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    // external(Verse)도 exe 경로가 설정돼 있어야 미리 띄운다
+    if (def.kind === 'external' && !def.command('')) return null
     return def
   }
 
@@ -536,19 +870,17 @@ class LspManager {
         // bundled 서버는 root와 무관하게 모듈 존재 여부만 본다
         return { ...base, kind: 'bundled' as const, state: def.command('') ? ('bundled' as const) : ('none' as const) }
       }
+      // external(Verse): exe 경로가 지정돼 준비됐으면 'installed', 아니면 'none'.
+      // path는 사용자가 지정한 vsix/exe 원본 경로(설정 표시용).
+      if (def.kind === 'external') {
+        return {
+          ...base,
+          kind: 'external' as const,
+          state: def.command('') ? ('installed' as const) : ('none' as const),
+          path: verseSourcePath() ?? undefined
+        }
+      }
       return { ...base, kind: 'download' as const, state: installState(def.id) }
-    })
-    // Verse: open-source UE ships no Verse language server, so there's nothing to spawn — but
-    // the app bundles a custom syntax-highlighting grammar (verseLang.ts). List it as a
-    // bundled, highlight-only language (no install/remove) so it shows up as supported.
-    list.push({
-      id: 'verse',
-      label: 'Verse',
-      langs: 'Verse',
-      exts: '.verse .versetest .vson',
-      kind: 'bundled',
-      state: 'bundled',
-      requires: '구문 강조'
     })
     return list
   }
@@ -562,34 +894,156 @@ class LspManager {
 
   /** Remove a downloaded server: stop every running instance, then delete from disk. */
   async uninstallServer(id: string): Promise<void> {
+    this.stopServers(id)
+    await uninstall(id)
+  }
+
+  /** Stop + drop every running server instance for an id (no disk changes). */
+  private stopServers(id: string): void {
     for (const [key, s] of [...this.servers]) {
       if (key.startsWith(id + '|')) {
-        s.rpc.dispose('서버 삭제')
+        s.rpc.dispose('서버 중지')
         killTree(s.child)
         this.servers.delete(key)
       }
     }
-    await uninstall(id)
   }
 
-  /** Hover info (markdown signature + docs) at an LSP (0-based) position. */
-  async hover(cwd: string, relPath: string, pos: LspPos): Promise<LspHoverResult | null> {
-    const ctx = await this.prep(cwd, relPath)
-    if (!ctx) return null
-    const r = await ctx.rpc.request<{ contents?: unknown } | null>('textDocument/hover', {
-      textDocument: { uri: ctx.uri },
+  /** Configure Verse's verse-lsp.exe from a user path (vsix/exe). Stops any running
+   *  verse server first so the destination binary isn't file-locked during copy. */
+  async setVersePath(srcPath: string): Promise<{ ok: boolean; error?: string }> {
+    this.stopServers('verse')
+    await killHolders('verse') // orphans from a force-killed run still hold the exe
+    await new Promise((r) => setTimeout(r, 300)) // let the OS release the handle
+    return setVerseExe(srcPath)
+  }
+
+  /** Forget the configured Verse server (stop it, delete the prepared exe + config). */
+  async clearVersePath(): Promise<void> {
+    this.stopServers('verse')
+    await killHolders('verse')
+    await new Promise((r) => setTimeout(r, 300))
+    await clearVerseExe()
+  }
+
+  /**
+   * Hover info (markdown signature + docs) at an LSP (0-based) position. `text` is the live editor
+   * buffer; when present we push it to the server (didChange) and feed it to the Verse helpers, so
+   * hover reflects UNSAVED edits — without it, hovering inside a freshly-typed (not-yet-saved)
+   * function reads stale/absent disk content at a shifted line and shows nothing.
+   */
+  async hover(cwd: string, relPath: string, pos: LspPos, text?: string): Promise<LspHoverResult | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return null
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    if (def.kind === 'external' && !def.command('')) return null
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return null
+    try {
+      await s.ready
+    } catch {
+      return null
+    }
+    // live buffer → didChange (reflects unsaved edits); no buffer → the disk-synced doc
+    const uri = text != null ? this.syncBuffer(s, def, abs, text) : await this.openDoc(s, def, abs)
+    const r = await s.rpc.request<{ contents?: unknown } | null>('textDocument/hover', {
+      textDocument: { uri },
       position: pos
     })
     const contents = hoverMarkdown(r?.contents)
+    if (def.id === 'verse') {
+      // 0) `?` 옵션 연산자 — verse-lsp도 글로서리(wordAt)도 기호는 못 잡으므로 위치로 판별해 설명.
+      const qdoc = await verseSymbolDoc(abs, pos.line, pos.character, text).catch(() => null)
+      if (qdoc) return { contents: qdoc }
+      // 1) 키워드·지정자·속성·내장 타입은 우리 용어집 설명으로. 내장 타입(int/void…)은 LSP가
+      //    이름만 주므로 여기서 덮어쓴다 — 그래서 LSP 응답 유무와 무관하게 가장 먼저 본다.
+      const gloss = await verseKeywordDoc(abs, pos.line, pos.character, text).catch(() => null)
+      if (gloss) return { contents: gloss }
+      // 2) 지역변수·매개변수: verse-lsp는 선언부엔 호버가 없고, 사용처엔 `:type` 시그니처만 줘서
+      //    렌더러가 'Constant'로 오분류한다. 파일을 스캔해 먼저 판별하고 'Parameter'/'Local Variable'
+      //    로 덮어쓴다(클래스 필드는 들여쓰기로 제외 → verse-lsp가 처리). 타입은 선언 주석 또는
+      //    verse-lsp가 사용처에서 준 추론 타입(verseHoverType)으로 채운다.
+      const localSig = await verseLocalHover(abs, pos.line, pos.character, verseHoverType(contents), text).catch(() => null)
+      if (localSig) return { contents: localSig }
+      // 3) 실제 심볼: verse-lsp 호버는 `(/path:)name<specs>`만 줄 뿐 종류 키워드(class/struct…)도
+      //    문서 주석도 안 싣는다. definition으로 선언을 찾아 그 줄에서 종류를 읽어 시그니처 앞에
+      //    박고(그래야 카드가 'Type'이 아니라 'Class'로 뜬다) 위의 `# …`/@doc 주석도 붙인다.
+      if (contents) {
+        const { doc, kind } = await this.verseDefInfo(s.rpc, uri, pos, abs, text).catch(() => ({ doc: '', kind: null }))
+        const body = kind ? injectVerseKind(contents, kind) : contents
+        return { contents: doc ? body + '\n\n' + doc : body }
+      }
+      // 4) 호버가 아예 없으면 선언부 — 그 줄에서 카드를 합성한다(+ 그 위 문서 주석).
+      const declSig = await verseDeclHover(abs, pos.line, pos.character, text).catch(() => null)
+      if (declSig) return { contents: declSig }
+    }
     return contents ? { contents } : null
   }
 
-  /** Definition target(s) for the symbol at an LSP (0-based) position. */
-  async definition(cwd: string, relPath: string, pos: LspPos): Promise<LspLocation[]> {
-    const ctx = await this.prep(cwd, relPath)
-    if (!ctx) return []
-    const r = await ctx.rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
-      textDocument: { uri: ctx.uri },
+  /**
+   * Follow textDocument/definition for a Verse symbol and read its declaration: the doc comment
+   * above it, plus the declaration kind (class/struct/enum/interface/module) when the decl line
+   * is a type definition — so the hover card can label an external type reference 'Class' rather
+   * than the generic 'Type'. Works on the user's code and on API digests.
+   */
+  private async verseDefInfo(
+    rpc: StdioRpc,
+    uri: string,
+    pos: LspPos,
+    abs?: string,
+    text?: string
+  ): Promise<{ doc: string; kind: string | null }> {
+    const d = await rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
+      textDocument: { uri },
+      position: pos
+    })
+    const loc = Array.isArray(d) ? d[0] : d
+    if (!loc) return { doc: '', kind: null }
+    const turi = loc.uri ?? loc.targetUri
+    const range = loc.range ?? loc.targetSelectionRange ?? loc.targetRange
+    const line = range?.start?.line
+    if (!turi || !turi.startsWith('file:') || typeof line !== 'number') return { doc: '', kind: null }
+    try {
+      const file = fileURLToPath(turi)
+      // definition lands in the SAME (currently-edited) file → read the live buffer, not stale disk,
+      // so a just-typed type's kind/doc resolve. Cross-file/digest targets stay disk-read (saved).
+      const live =
+        abs != null && text != null && path.resolve(file).toLowerCase() === path.resolve(abs).toLowerCase()
+          ? text
+          : undefined
+      const lines = (live != null ? live : await fsp.readFile(file, 'utf8')).split(/\r?\n/)
+      const km = /:=\s*(class|struct|enum|interface|module)\b/.exec(lines[line] ?? '')
+      return { doc: await verseDocAt(file, line, live), kind: km ? km[1] : null }
+    } catch {
+      return { doc: '', kind: null }
+    }
+  }
+
+  /**
+   * Definition target(s) for the symbol at an LSP (0-based) position. `text` is the live editor
+   * buffer; when present we push it (didChange) so both the clicked position AND a same-file target
+   * line are in the on-screen coordinate system — without it, jumping to a symbol you just typed
+   * (unsaved) resolves against stale disk content and lands on the wrong line (or nothing).
+   */
+  async definition(cwd: string, relPath: string, pos: LspPos, text?: string): Promise<LspLocation[]> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return []
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return []
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return []
+    if (def.kind === 'external' && !def.command('')) return []
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return []
+    try {
+      await s.ready
+    } catch {
+      return []
+    }
+    const uri = text != null ? this.syncBuffer(s, def, abs, text) : await this.openDoc(s, def, abs)
+    const r = await s.rpc.request<RawLocation | RawLocation[] | null>('textDocument/definition', {
+      textDocument: { uri },
       position: pos
     })
     const list = Array.isArray(r) ? r : r ? [r] : []
@@ -616,7 +1070,7 @@ class LspManager {
         const safe = (s: string): string => s.replace(/[^\w.\-]/g, '_')
         const file = path.join(METADATA_DIR, safe(meta.AssemblyName), safe(meta.TypeName) + '.cs')
         if (!fs.existsSync(file)) {
-          const m = await ctx.rpc.request<{ Source?: string } | null>('o#/metadata', { ...meta, Timeout: 5000 }, 15000)
+          const m = await s.rpc.request<{ Source?: string } | null>('o#/metadata', { ...meta, Timeout: 5000 }, 15000)
           if (!m?.Source) continue
           await fsp.mkdir(path.dirname(file), { recursive: true })
           await fsp.writeFile(file, m.Source)
@@ -627,6 +1081,143 @@ class LspManager {
       }
     }
     return out
+  }
+
+  /**
+   * Completion candidates at an LSP position. Unlike hover/definition — which query the
+   * SAVED file — completion is interactive-while-typing: the partial word and any unsaved
+   * edits aren't on disk yet. So the renderer hands us `text` (the live CM buffer) and we
+   * push it to the server with a didChange right before asking, so the server's view, the
+   * cursor position, and the partial token all line up with what the user sees on screen.
+   * Returns null when the file's server has no completion provider (e.g. color-only Verse).
+   */
+  async completion(cwd: string, relPath: string, pos: LspPos, text: string): Promise<LspCompletionList | null> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return null
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    if (def.kind === 'external' && !def.command('')) return null
+    const root = def.rootFor?.(abs, cwd) ?? cwd
+    const s = this.ensure(def, root)
+    if (!s) return null
+    try {
+      await s.ready
+    } catch {
+      return null
+    }
+    if (s.complTriggers == null) return null // server advertised no completionProvider
+    const uri = this.syncBuffer(s, def, abs, text)
+    // when the char left of the cursor is one of the server's trigger chars (Verse '.'),
+    // tell the server it was a trigger-character completion (2) — some servers only return
+    // member lists in that mode; otherwise it's an explicit/typed invocation (1)
+    const before = charBefore(text, pos)
+    const ctx =
+      before && s.complTriggers.includes(before)
+        ? { triggerKind: 2, triggerCharacter: before }
+        : { triggerKind: 1 }
+    // a newer keystroke obsoletes any completion still in flight — cancel it so the server
+    // drops the stale full-document parse instead of working through a backlog
+    if (s.lastComplId != null) s.rpc.cancel(s.lastComplId)
+    const { id, promise } = s.rpc.requestId<RawCompletion>(
+      'textDocument/completion',
+      { textDocument: { uri }, position: pos, context: ctx },
+      15000
+    )
+    s.lastComplId = id
+    let r = await promise.catch(() => null)
+    if (s.lastComplId === id) s.lastComplId = undefined
+    if (def.id === 'verse') {
+      // ── Member access (`receiver.partial`) ──────────────────────────────────────────────
+      // verse-lsp returns the lexical SCOPE here (locals+globals), never the receiver's members. So
+      // resolve the receiver's type ACCURATELY (hover tracks vars/params/members/chains; a known type
+      // name resolves instantly; regex is the cold/fail fallback) and list THAT type's members from our
+      // scan map. Show ONLY these — the LSP's lexical-scope items are noise right after a `.`.
+      const mctx = verseMemberContext(text, pos)
+      if (mctx) {
+        let type = verseHasType(root, text, mctx.receiver) ? mctx.receiver : null
+        if (!type) {
+          const hov = await s.rpc
+            .request<{ contents?: unknown } | null>(
+              'textDocument/hover',
+              { textDocument: { uri }, position: mctx.receiverPos },
+              4000
+            )
+            .catch(() => null)
+          type = verseTypeFromHover(hoverContentString(hov))
+        }
+        if (!type) type = verseResolveTypeRegex(root, text, mctx.receiver, pos.line)
+        if (type) {
+          // a `Self.` receiver may see the class's own private members; an external `obj.` may not
+          const members = verseTypeMembers(root, text, type, mctx.receiver === 'Self')
+          if (members.length) return { items: members, isIncomplete: false }
+        }
+        // member access on an unresolved receiver — fall back to whatever verse-lsp gave (often
+        // nothing), but do NOT inject scope identifiers: locals/functions are wrong right after a `.`.
+        return mapCompletion(r)
+      }
+      // ── Identifier completion (no `.`) ──────────────────────────────────────────────────
+      // verse-lsp's lexical scope only populates when the file COMPILES — which it rarely does while
+      // you type — so the user's own locals/params/functions/types disappear. Scan them from the live
+      // buffer + project and merge OVER verse-lsp's list so they ALWAYS appear with the right kind.
+      // Only spin for a cold server when even our scan is empty (a brand-new / near-empty file).
+      const scope = verseScopeCompletions(root, text, pos)
+      const isEmpty = (x: RawCompletion): boolean => !x || (Array.isArray(x) ? x.length === 0 : !x.items?.length)
+      for (let tries = 0; tries < 4 && isEmpty(r) && !scope.length; tries++) {
+        await new Promise((res) => setTimeout(res, 120))
+        if (s.lastComplId != null) s.rpc.cancel(s.lastComplId)
+        const rr = s.rpc.requestId<RawCompletion>(
+          'textDocument/completion',
+          { textDocument: { uri }, position: pos, context: ctx },
+          15000
+        )
+        s.lastComplId = rr.id
+        r = await rr.promise.catch(() => null)
+        if (s.lastComplId === rr.id) s.lastComplId = undefined
+      }
+      // type-annotation slot (`: Type`) → types only (no locals/functions); else the full scope merge
+      if (verseIsTypePosition(text, pos)) {
+        const typeScope = [
+          ...verseBuiltinTypeItems(),
+          ...scope.filter((it) => TYPE_KINDS.has(it.kind ?? -1))
+        ]
+        return mergeVerseTypes(typeScope, r, verseMemberDbRegistry(root))
+      }
+      return mergeVerseScope(scope, r, verseExtMethods(root))
+    }
+    return mapCompletion(r)
+  }
+
+  /**
+   * Eagerly open a file on its LSP server (didOpen) the moment the viewer shows it, so the
+   * server finishes compiling/indexing BEFORE the user types. Without this the first
+   * completion is itself the file's first didOpen — the server hasn't indexed yet and returns
+   * an empty list, so the popup looks broken until a few retries later (cold start). Fire-and-
+   * forget; mirrors completion()'s guards and is a no-op for files with no server.
+   */
+  async warm(cwd: string, relPath: string): Promise<void> {
+    const abs = this.resolve(cwd, relPath)
+    const def = abs ? serverDefFor(abs) : null
+    if (!abs || !def) return
+    if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return
+    if (def.kind === 'download' && installState(def.id) !== 'installed') return
+    if (def.kind === 'external' && !def.command('')) return
+    const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
+    if (!s) return
+    try {
+      await s.ready
+    } catch {
+      return
+    }
+    await this.openDoc(s, def, abs).catch(() => {})
+  }
+
+  /** Accurate Verse type registry for a file's project (for the renderer's semantic colouring). */
+  verseRegistry(cwd: string, relPath: string): VerseRegistry | null {
+    const abs = this.resolve(cwd, relPath)
+    if (!abs || serverDefFor(abs)?.id !== 'verse') return null
+    const root = verseProjectRoot(abs) ?? cwd
+    return root ? verseMemberDbRegistry(root) : null
   }
 
   /** Kill every server (app quit). */
@@ -692,6 +1283,7 @@ class LspManager {
       docs: new Map(),
       diedAt: 0,
       semLegend: null,
+      complTriggers: null,
       projectInitPending: !!def.awaitsProjectInit,
       progressPct: null
     }
@@ -709,19 +1301,33 @@ class LspManager {
       }
     }
     const rootUri = pathToFileURL(path.resolve(root)).href
+    // Verse supplies its own multi-root folder set (source + API digests, from the .vproject).
+    // With a custom set we send rootUri:null (LSP multi-root convention) so the server treats
+    // each folder as a package root rather than re-scanning the project root.
+    const customFolders = def.workspaceFoldersFor?.(path.resolve(root))
+    const folders = customFolders ?? [{ uri: rootUri, name: path.basename(root) }]
     handle.ready = rpc
       .request<{
-        capabilities?: { semanticTokensProvider?: { legend?: { tokenTypes?: string[]; tokenModifiers?: string[] } } }
+        capabilities?: {
+          semanticTokensProvider?: { legend?: { tokenTypes?: string[]; tokenModifiers?: string[] } }
+          completionProvider?: { triggerCharacters?: string[] }
+        }
       }>(
         'initialize',
         {
           processId: process.pid,
-          rootUri,
-          workspaceFolders: [{ uri: rootUri, name: path.basename(root) }],
+          rootUri: customFolders ? null : rootUri,
+          workspaceFolders: folders,
           capabilities: {
             textDocument: {
               hover: { contentFormat: ['markdown', 'plaintext'] },
               definition: {},
+              // completion isn't wired for every server yet, but declaring the client
+              // capability is harmless and lets servers that gate completion on it (and
+              // their snippet/markdown-doc formats) light up — Verse's verse-lsp included
+              completion: {
+                completionItem: { snippetSupport: true, documentationFormat: ['markdown', 'plaintext'] }
+              },
               synchronization: { dynamicRegistration: false },
               semanticTokens: {
                 requests: { full: true },
@@ -753,6 +1359,10 @@ class LspManager {
           Array.isArray(types) && types.length
             ? { types, mods: Array.isArray(legend?.tokenModifiers) ? legend.tokenModifiers : [] }
             : null
+        // record the completion trigger chars (Verse: '.'). null = no completionProvider →
+        // completion() short-circuits so we never round-trip to a server that can't complete.
+        const cp = res?.capabilities?.completionProvider
+        handle.complTriggers = cp ? (Array.isArray(cp.triggerCharacters) ? cp.triggerCharacters : []) : null
         rpc.notify('initialized', {})
         def.afterInitialized?.(rpc, path.resolve(root))
         handle.status = 'ready'
@@ -795,6 +1405,7 @@ class LspManager {
     if (!abs || !def) return null
     if (abs.toLowerCase().startsWith(METADATA_DIR.toLowerCase())) return null
     if (def.kind === 'download' && installState(def.id) !== 'installed') return null
+    if (def.kind === 'external' && !def.command('')) return null
     const s = this.ensure(def, def.rootFor?.(abs, cwd) ?? cwd)
     if (!s) return null
     try {
@@ -804,6 +1415,42 @@ class LspManager {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Push the LIVE editor buffer to the server (didOpen if new, else didChange) so the very
+   * next request sees the user's unsaved edits + partial word. Used by completion, which —
+   * unlike the disk-synced openDoc — must reflect the on-screen buffer, not the saved file.
+   * We mark the disk-sync tracker stale (mtime/size = -1) so the next openDoc (hover/def on a
+   * later keystroke) re-reads disk and re-syncs, instead of trusting an unchanged mtime and
+   * leaving the server stuck on this buffer version.
+   */
+  private syncBuffer(s: ServerHandle, def: ServerDef, abs: string, text: string): string {
+    const uri = pathToFileURL(abs).href
+    const cur = s.docs.get(uri)
+    if (!cur) {
+      s.docs.set(uri, { version: 1, mtimeMs: -1, size: -1 })
+      const ext = path.extname(abs).slice(1).toLowerCase()
+      s.rpc.notify('textDocument/didOpen', {
+        textDocument: { uri, languageId: def.exts[ext] ?? Object.values(def.exts)[0], version: 1, text }
+      })
+      if (s.docs.size > MAX_OPEN_DOCS) {
+        const oldest = s.docs.keys().next().value
+        if (oldest && oldest !== uri) {
+          s.docs.delete(oldest)
+          s.rpc.notify('textDocument/didClose', { textDocument: { uri: oldest } })
+        }
+      }
+    } else {
+      cur.version++
+      cur.mtimeMs = -1
+      cur.size = -1
+      s.rpc.notify('textDocument/didChange', {
+        textDocument: { uri, version: cur.version },
+        contentChanges: [{ text }] // no range → full-content replace
+      })
+    }
+    return uri
   }
 
   /**

@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useRef, useState, type CSSProperties, type ComponentType } from 'react'
+import { Fragment, memo, useEffect, useRef, useState, type CSSProperties, type ComponentType, type ReactNode } from 'react'
 import type {
   ModelId,
   EffortId,
@@ -7,11 +7,16 @@ import type {
   ToolLogItem,
   AgentQuestion,
   SkillInfo,
-  PlanGoal
+  PlanGoal,
+  AgentStatus,
+  Todo,
+  ChangedFile,
+  SubAgentInfo
 } from '@shared/protocol'
 import type { ThreadItem } from '../store/session'
 import { Markdown } from './Markdown'
 import { FileBadge } from './fileType'
+import { StatusPill, Todos, FileRow, SubAgent } from './AgentPanel'
 import { mentionAtCaret, mentionEntries, type MentionEntry } from '../lib/mentions'
 import { imageSrc, imageName, filesToImagePaths } from '../lib/images'
 import {
@@ -45,6 +50,9 @@ import {
   IconChevRight,
   IconClock,
   IconPlay,
+  IconList,
+  IconBot,
+  IconPanelLeft,
   type IconProps
 } from './icons'
 
@@ -603,11 +611,34 @@ export function WorkingIndicator({ text }: { text: string | null }) {
   )
 }
 
-export function ChatHeader({ title }: { title: string }) {
+// status/elapsed are optional — only the code(agent) mode passes them, so the
+// 대기중/작업중 pill rides the header's top-right (where the agent panel used to
+// show it). 채팅 모드는 안 넘기므로 칩이 뜨지 않는다.
+// explorerHidden/onToggleExplorer: 탐색기를 접으면 레일을 남기지 않고 완전히 사라지므로,
+// 단축키(Ctrl/⌘+F)를 모르는 사람도 다시 열 수 있게 헤더 좌상단에 토글 버튼을 둔다.
+export function ChatHeader({
+  title,
+  status,
+  elapsed,
+  explorerHidden,
+  onToggleExplorer
+}: {
+  title: string
+  status?: AgentStatus
+  elapsed?: number
+  explorerHidden?: boolean
+  onToggleExplorer?: () => void
+}) {
   return (
     <div className="chat-head">
+      {explorerHidden && onToggleExplorer && (
+        <button className="chat-head-toggle has-tip" data-tip="탐색기 열기" aria-label="탐색기 열기" onClick={onToggleExplorer}>
+          <IconPanelLeft size={17} />
+        </button>
+      )}
       {title && <span className="h-title">{title}</span>}
       <span className="spacer" />
+      {status && <StatusPill status={status} elapsed={elapsed ?? 0} />}
     </div>
   )
 }
@@ -720,6 +751,7 @@ export function SelectionToolbar({
   )
 }
 
+// 에이전트(코드) 모드 — 코드베이스를 직접 다루는 작업 위주
 const WELCOME_SUGGESTIONS: { icon: typeof IconPencil; label: string }[] = [
   { icon: IconEye, label: '이 프로젝트의 구조를 설명해줘' },
   { icon: IconSearch, label: '버그를 찾아서 고쳐줘' },
@@ -727,17 +759,46 @@ const WELCOME_SUGGESTIONS: { icon: typeof IconPencil; label: string }[] = [
   { icon: IconPencil, label: '테스트 코드를 작성해줘' }
 ]
 
-// shown in the chat area when the active conversation is empty (first launch / new chat)
-export function WelcomeState({ userName, onPick }: { userName: string; onPick: (text: string) => void }) {
+// 순수 채팅(대화) 모드 — 작업 폴더가 없어 코드 작업이 아니라 설명·아이디어·상의 위주
+const CHAT_SUGGESTIONS: { icon: typeof IconPencil; label: string }[] = [
+  { icon: IconBook, label: '어려운 개념을 쉽게 설명해줘' },
+  { icon: IconBolt, label: '아이디어를 함께 브레인스토밍해줘' },
+  { icon: IconWrench, label: '기술 선택이나 설계 방향을 같이 고민해줘' },
+  { icon: IconPencil, label: '글이나 문서 초안을 작성해줘' }
+]
+
+const WELCOME_COPY = {
+  agent: {
+    sub: '코드 작성과 리뷰부터 버그 수정, 리팩터링까지 — 아래에 바로 입력하거나 추천으로 시작해보세요.',
+    suggestions: WELCOME_SUGGESTIONS
+  },
+  chat: {
+    sub: '가볍게 대화로 시작해보세요 — 궁금한 걸 묻거나 아이디어를 함께 정리해보세요.',
+    suggestions: CHAT_SUGGESTIONS
+  }
+} as const
+
+// shown in the chat area when the active conversation is empty (first launch / new chat).
+// variant='chat'은 작업 폴더 없는 순수 대화 모드용 — 대화 중심 추천을 보여준다.
+export function WelcomeState({
+  userName,
+  onPick,
+  variant = 'agent'
+}: {
+  userName: string
+  onPick: (text: string) => void
+  variant?: 'agent' | 'chat'
+}) {
+  const copy = WELCOME_COPY[variant]
   return (
     <div className="welcome">
       <div className="wc-mark">
         <IconClaude size={26} />
       </div>
       <div className="wc-title">무엇을 도와드릴까요{userName ? `, ${userName}님` : ''}?</div>
-      <div className="wc-sub">코드 작성과 리뷰부터 버그 수정, 리팩터링까지 — 아래에 바로 입력하거나 추천으로 시작해보세요.</div>
+      <div className="wc-sub">{copy.sub}</div>
       <div className="wc-grid">
-        {WELCOME_SUGGESTIONS.map((s) => (
+        {copy.suggestions.map((s) => (
           <button key={s.label} className="wc-card" onClick={() => onPick(s.label)}>
             <span className="wc-ic">
               <s.icon size={16} />
@@ -964,6 +1025,208 @@ function ContextStrip({ winTokens, contextTokens, usage }: { winTokens: number; 
     </div>
   )
 }
+
+type WorkTab = 'todo' | 'sub' | 'file' | 'ctx'
+
+// 코드(에이전트) 모드의 "작업 바" — 컴포저 바로 위 한 줄. 할 일·서브에이전트·변경된
+// 파일·컨텍스트를 알약 칩으로 두고, 누르면 그 칩 위로 팝오버가 떠 내용을 보여준다
+// (한 번에 하나, Esc·바깥 클릭으로 닫힘). 예전 오른쪽 에이전트 패널(.agent)을 대체해
+// 대화 칼럼을 넓힌다. App이 매 틱 리렌더해도 컴포저 타이핑과 분리되도록 memo.
+export const WorkBar = memo(function WorkBar({
+  status,
+  todos,
+  files,
+  subagents,
+  usage,
+  contextTokens,
+  contextWindow,
+  model,
+  onOpenFile,
+  onOpenSubagent
+}: {
+  status: AgentStatus
+  todos: Todo[]
+  files: ChangedFile[]
+  subagents: SubAgentInfo[]
+  usage: UsageInfo
+  contextTokens: number | null
+  contextWindow: number | null
+  model: ModelId
+  onOpenFile: (f: ChangedFile) => void
+  onOpenSubagent: (a: SubAgentInfo) => void
+}) {
+  const [open, setOpen] = useState<WorkTab | null>(null)
+  const ref = useRef<HTMLDivElement>(null)
+  const busy = status === 'analyzing' || status === 'working'
+
+  // 팝오버는 Esc / 바깥 클릭으로 닫는다 (네이티브 다이얼로그 금지 — 카드 패턴 유지)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(null)
+    }
+    const onDown = (e: MouseEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(null)
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onDown)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onDown)
+    }
+  }, [open])
+
+  const winTokens = windowTokensFor(model, contextWindow)
+  const ctxPct = contextTokens != null && winTokens > 0 ? Math.min(100, Math.round((contextTokens / winTokens) * 100)) : 0
+  const todoDone = todos.filter((t) => t.status === 'done').length
+  const runningSub = subagents.filter((a) => a.status === 'running').length
+  const doneSub = subagents.filter((a) => a.status === 'done').length
+
+  // 컨텍스트 팝오버는 예전 컴포저 스트립과 같은 3줄(현재 컨텍스트·5시간·주간)
+  const ctxItems: { label: string; pct: number | null; detail: string }[] = [
+    {
+      label: '현재 컨텍스트',
+      pct: ctxPct,
+      detail: `${contextTokens != null ? fmtTok(contextTokens) : 0} / ${fmtWindow(Math.round(winTokens / 1000))} 토큰`
+    },
+    { label: '5시간 한도', pct: usage.fiveHour?.pct ?? null, detail: usage.fiveHour ? resetText(usage.fiveHour.resetsAt, false) : '데이터 없음' },
+    { label: '주간 한도', pct: usage.weekly?.pct ?? null, detail: usage.weekly ? resetText(usage.weekly.resetsAt, true) : '데이터 없음' }
+  ]
+
+  const toggle = (t: WorkTab): void => setOpen((o) => (o === t ? null : t))
+
+  // 칩 면(面)은 예전 컨텍스트 스트립과 똑같은 결 — 왼쪽 링/아이콘 + 2줄 텍스트(라벨·값
+  // 위, 디테일 아래). 4칸이 폭을 똑같이 나눠(flex:1) 가지런히 채운다. 누르면 그 칸 위로
+  // 팝오버가 떠 상세 목록을 보여준다.
+  const todoTotal = todos.length
+  const todoPct = todoTotal ? Math.round((todoDone / todoTotal) * 100) : 0
+  const subTotal = subagents.length
+  const totalAdd = files.reduce((n, f) => n + (f.add || 0), 0)
+  const totalDel = files.reduce((n, f) => n + (f.del || 0), 0)
+
+  const chips: { key: WorkTab; ring?: number; icon?: ReactNode; label: string; value: string; detail: string; tip: string; align?: 'r' }[] = [
+    { key: 'todo', icon: <IconList size={14} />, label: '할 일', value: `${todoDone}/${todoTotal || 0}`, detail: todoTotal ? `${todoPct}% 완료` : busy ? '계획 수립 중' : '없음', tip: 'Claude가 세운 작업 계획 — 누르면 할 일 목록' },
+    { key: 'sub', icon: <IconBot size={14} />, label: '서브에이전트', value: `${doneSub}/${subTotal || 0}`, detail: runningSub > 0 ? `${runningSub}개 실행 중` : subTotal ? '모두 완료' : '없음', tip: 'Claude가 띄운 보조 에이전트의 진행 상황 — 누르면 목록' },
+    { key: 'file', icon: <IconFile size={14} />, label: '변경된 파일', value: `${files.length}`, detail: files.length ? `+${totalAdd} −${totalDel}` : '없음', tip: '이번 작업에서 생성·수정된 파일 — 누르면 목록·diff' },
+    { key: 'ctx', ring: ctxPct, label: '컨텍스트', value: `${ctxPct}%`, detail: ctxItems[0].detail, tip: '대화의 컨텍스트 사용량·사용 한도 — 누르면 자세히', align: 'r' }
+  ]
+
+  const popBody = (key: WorkTab): ReactNode => {
+    if (key === 'todo')
+      return (
+        <>
+          <div className="wb-pop-h">
+            <span className="t">할 일</span>
+            <span className="c">
+              {todoDone}/{todoTotal || 0}
+            </span>
+          </div>
+          {todoTotal ? <Todos todos={todos} /> : <div className="ag-none">{busy ? '계획을 수립하는 중…' : '아직 할 일이 없어요'}</div>}
+        </>
+      )
+    if (key === 'sub')
+      return (
+        <>
+          <div className="wb-pop-h">
+            <span className="t">서브에이전트</span>
+            <span className="c">{runningSub > 0 ? runningSub + ' 실행 중' : doneSub + '/' + (subTotal || 0)}</span>
+          </div>
+          {subTotal ? (
+            <div className="wb-pop-list">
+              {subagents.map((a) => (
+                <SubAgent
+                  key={a.id}
+                  a={a}
+                  onOpen={(x) => {
+                    setOpen(null)
+                    onOpenSubagent(x)
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="ag-none">아직 서브에이전트가 없어요</div>
+          )}
+        </>
+      )
+    if (key === 'file')
+      return (
+        <>
+          <div className="wb-pop-h">
+            <span className="t">변경된 파일</span>
+            <span className="c">{files.length}</span>
+          </div>
+          {files.length ? (
+            <div className="wb-pop-list">
+              {files.map((f) => (
+                <FileRow
+                  key={f.path}
+                  f={f}
+                  onOpen={(x) => {
+                    setOpen(null)
+                    onOpenFile(x)
+                  }}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="ag-none">아직 변경된 파일이 없어요</div>
+          )}
+        </>
+      )
+    return (
+      <>
+        <div className="wb-pop-h">
+          <span className="t">컨텍스트 · 사용 한도</span>
+        </div>
+        <div className="wb-ctx-list">
+          {ctxItems.map((c, i) => (
+            <div className="ctx-chip" key={i}>
+              <span className="cc-ring" style={{ ['--p']: c.pct ?? 0 } as CSSProperties} />
+              <span className="cc-text">
+                <span className="cc-top">
+                  <span className="cc-label">{c.label}</span>
+                  <span className="cc-pct">{c.pct != null ? c.pct + '%' : '—'}</span>
+                </span>
+                <span className="cc-detail">{c.detail}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </>
+    )
+  }
+
+  return (
+    <div className="workbar-wrap">
+      <div className="workbar" ref={ref}>
+        {chips.map((c) => (
+          <div className="wb-cell" key={c.key}>
+            <button
+              className={'wb-chip' + (open === c.key ? ' on' : ' has-tip')}
+              data-tip={c.tip}
+              onClick={() => toggle(c.key)}
+            >
+              {c.ring != null ? (
+                <span className="cc-ring" style={{ ['--p']: c.ring } as CSSProperties} />
+              ) : (
+                <span className="wb-ic">{c.icon}</span>
+              )}
+              <span className="cc-text">
+                <span className="cc-top">
+                  <span className="cc-label">{c.label}</span>
+                  <span className="cc-pct">{c.value}</span>
+                </span>
+                <span className="cc-detail">{c.detail}</span>
+              </span>
+            </button>
+            {open === c.key && <div className={'wb-pop' + (c.align === 'r' ? ' r' : '')}>{popBody(c.key)}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+})
 
 // distinct colors for the option number badges (1-8), cycled by position
 const Q_NUM_COLORS = [
@@ -1385,6 +1648,7 @@ export function Composer({
   contextTokens,
   contextWindow,
   usage,
+  showContext = true,
   cwd,
   mentionBase,
   inputRef
@@ -1409,6 +1673,7 @@ export function Composer({
   contextTokens: number | null
   contextWindow: number | null // real window from the SDK; null → use the model default
   usage: UsageInfo
+  showContext?: boolean // 코드 모드는 작업 바가 컨텍스트를 보여주므로 컴포저 안 스트립을 끈다(기본 true)
   cwd: string // project dir — scopes which skills the "/" palette loads
   mentionBase?: string // @ 멘션이 파일을 뜨우는 기준 폴더(탐색기가 보는 폴더). 없으면 cwd
   inputRef?: React.RefObject<HTMLTextAreaElement | null>
@@ -1785,7 +2050,7 @@ export function Composer({
   return (
     <div className="composer-wrap">
       <div className="composer-inner">
-        <ContextStrip winTokens={winTokens} contextTokens={contextTokens} usage={usage} />
+        {showContext && <ContextStrip winTokens={winTokens} contextTokens={contextTokens} usage={usage} />}
 
         {queued.length > 0 && (
           <div className="sched">
