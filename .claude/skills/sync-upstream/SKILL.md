@@ -1,127 +1,176 @@
 ---
 name: sync-upstream
-description: 원본(upstream) 레포의 변경사항을 fetch해서 검토하고, 전체 병합 / 특정 커밋 cherry-pick / 특정 파일만 가져오기 중 사용자가 선택한 방식으로 fork에 반영한다. fork 동기화, 원본 변경사항 가져오기, upstream sync, "원본이랑 맞춰줘" 같은 요청 시 사용.
+description: Fetch new commits from the upstream repo, explain what each commit does, analyze conflicts/overlap against local changes, then apply only what the user approves via full merge / cherry-pick / file-only checkout. Unwanted commits are never pulled. Use for fork sync, reviewing/explaining upstream changes, upstream sync, and requests like "원본이랑 맞춰줘" or "원본에 뭐 올라왔어?".
 ---
 
-# Sync Upstream — 원본 변경사항 선택적 반영
+# Sync Upstream — Selectively Pull Upstream Changes Into the Fork
 
-이 레포는 fork다. remote 구성:
-- `origin` → 내 fork (`MumuKim0212/AgentCodeGUI`)
-- `upstream` → 원본 (`UnrealFactory/AgentCodeGUI`)
+This repo is a fork. Remotes:
+- `origin` → my fork (`MumuKim0212/AgentCodeGUI`)
+- `upstream` → original (`UnrealFactory/AgentCodeGUI`)
 
-목표: 원본의 새 변경사항을 **검토한 뒤, 원하는 것만 골라서** 내 fork에 반영한다.
-절대 무턱대고 전체 병합하지 말 것. 항상 먼저 보여주고 사용자에게 방식을 확인받는다.
+Goal: review upstream's new changes, **explain them**, and pull in **only what the user wants**.
+Never merge everything blindly. Always show first and confirm the approach with the user.
 
-## 1단계: 가져오기 + 차이 검토 (항상 먼저 실행)
+**Language: write this document and your reasoning in English, but talk to the user in Korean (한글).** All explanations, summaries, and questions shown to the user should be in Korean.
+
+## Step 1: Fetch + check state (always run first)
 
 ```bash
 git fetch upstream
 ```
 
-그 다음 차이를 확인하고 사용자에게 보고한다:
+Then check state:
 
 ```bash
-# 작업 트리가 깨끗한지 (커밋 안 한 변경 있으면 먼저 알린다)
+# Is the working tree clean? (warn first if there are uncommitted changes)
 git status --short
 
-# 현재 브랜치 확인
+# Current branch
 git branch --show-current
 
-# upstream에는 있고 내 브랜치엔 아직 없는 커밋 (= 가져올 후보)
+# Commits in upstream but not yet in my branch (= candidates to pull)
 git log --oneline --no-merges HEAD..upstream/main
 
-# 내 fork에만 있는 커밋 (= 내가 한 수정. 충돌 가능성 판단용)
+# Commits only in my fork (= my edits; used to judge conflict risk)
 git log --oneline --no-merges upstream/main..HEAD
 
-# 파일 단위 변경 요약
+# File-level change summary
 git diff --stat HEAD..upstream/main
 ```
 
-- 가져올 커밋이 **없으면** "이미 최신 상태"라고 알리고 종료.
-- 가져올 커밋이 있으면 각 커밋의 해시·메시지·변경 파일을 **목록으로 정리해서** 사용자에게 보여준다.
-- 작업 트리가 더럽거나(uncommitted changes) 현재 브랜치가 `main`이 아니면 먼저 알리고 진행 여부를 확인한다.
+- If there are **no** commits to pull, tell the user "이미 최신 상태입니다" and stop.
+- If the working tree is dirty (uncommitted changes) or the current branch is not `main`, warn the user and confirm before proceeding.
 
-## 2단계: 방식 선택 (사용자에게 물어본다)
+## Step 2: Explain each commit (so the user can choose)
 
-AskUserQuestion으로 어떻게 반영할지 묻는다. 보기:
+When there are candidate commits, do not just list hashes/messages — **read the actual changes and explain in plain language what each commit does**. The user decides what to pull based on this explanation.
 
-| 방식 | 언제 | 결과 |
-|------|------|------|
-| **전체 병합** | 원본 변경을 다 따라가고 싶을 때 | `git merge upstream/main` |
-| **커밋 골라오기 (cherry-pick)** | 일부 커밋만 원할 때 | 선택한 커밋만 적용 |
-| **파일만 가져오기** | 특정 파일을 원본 버전으로 덮어쓸 때 | 선택 파일만 교체 |
-| **취소** | 지금은 안 가져옴 | 아무것도 안 함 |
+For each candidate commit:
 
-cherry-pick / 파일 가져오기를 고르면, 1단계에서 보여준 목록을 근거로 **구체적으로 어떤 커밋/파일인지** 다시 확인받는다.
+```bash
+# Commit message body + changed files
+git show <hash> --stat
 
-## 3단계: 실행
+# Read the actual code change if needed (to understand the feature)
+git show <hash>
+```
 
-안전을 위해 작업 전 현재 위치에 백업 브랜치를 만들어 둘 것을 권장:
+Then report each commit to the user (in Korean) using this shape:
+
+- **`<short-hash>` <one-line summary>**
+  - 무슨 기능인지: (1–3 lines, in your own words, from reading the code)
+  - 바뀌는 파일: `path/a.ts`, `path/b.ts` …
+  - 내 로컬/fork 수정과 겹치는가: (result from Step 3 — clean / touches same file / conflict risk)
+
+If there are many commits, a table is fine. The point: let the user judge at a glance **what each commit is and how pulling it affects their code.**
+
+## Step 3: Compare against local changes (pre-analyze conflicts/overlap)
+
+Before pulling, check how each candidate commit interacts with my fork's edits.
+
+```bash
+# Do the files a commit touches overlap with files my fork changed?
+git show <hash> --stat --name-only
+git diff --name-only upstream/main...HEAD     # files changed in my fork
+
+# Dry-run whether applying a commit conflicts (no working-tree commit)
+git cherry-pick --no-commit <hash>            # trial apply
+git status                                     # check for conflicts
+git cherry-pick --abort                        # or: git reset --hard HEAD; cancel the trial
+```
+
+Fold the result into the Step 2 explanation:
+- **No overlap** → safe to pull
+- **Touches the same file, different regions** → usually auto-merges
+- **Conflict risk** → manual resolution needed if pulled (Step 7). Warn up front.
+
+If I already implemented the same feature locally (duplicate), point that out too and consider recommending "do not pull it."
+
+## Step 4: Choose the approach (ask the user)
+
+Use AskUserQuestion to ask how to apply. **The default is: do not pull commits the user doesn't want.** Options:
+
+| Approach | When | Result |
+|----------|------|--------|
+| **Full merge** | Want to follow all upstream changes | `git merge upstream/main` |
+| **Cherry-pick** | Want only specific commits | Only selected commits applied; the rest are not pulled |
+| **File-only** | Overwrite specific files with the upstream version | Only chosen files replaced |
+| **Cancel** | Don't pull anything now | Nothing happens |
+
+If they choose cherry-pick / file-only, re-confirm **exactly which commits/files to pull and which to leave out**, based on the Step 2–3 explanation.
+
+## Step 5: Execute
+
+Recommend creating a backup branch at the current position before working, for safety:
 ```bash
 git branch backup/pre-sync-$(date +%Y%m%d-%H%M%S)
 ```
 
-### A) 전체 병합
+### A) Full merge
 ```bash
 git merge upstream/main
 ```
 
-### B) 커밋 골라오기 (cherry-pick)
+### B) Cherry-pick
 ```bash
-git cherry-pick <해시1> <해시2> ...
+git cherry-pick <hash1> <hash2> ...
 ```
-- 범위로도 가능: `git cherry-pick A^..B` (A부터 B까지)
+- Ranges also work: `git cherry-pick A^..B` (A through B)
 
-### C) 특정 파일만 가져오기
+### C) File-only
 ```bash
-git checkout upstream/main -- <경로/파일1> <경로/파일2>
-git status        # 스테이징된 변경 확인
-# 사용자가 확인하면 커밋
-git commit -m "원본에서 <파일> 가져옴"
-```
-
-## 4단계: 충돌 처리
-
-충돌이 나면 (`CONFLICT` 메시지):
-
-```bash
-git status        # 충돌 파일 목록
+git checkout upstream/main -- <path/file1> <path/file2>
+git status        # check staged changes
+# commit once the user confirms
+git commit -m "Pull <file> from upstream"
 ```
 
-각 충돌 파일을 열어 `<<<<<<<`, `=======`, `>>>>>>>` 마커를 확인한다.
-- `HEAD` 쪽 = 내 fork 수정
-- 다른 쪽 = 원본 변경
+## Step 6: Handle conflicts
 
-각 충돌마다 어느 쪽을 살릴지(또는 둘 다 합칠지) **사용자에게 보여주고 확인**한 뒤 해결한다. 임의로 한쪽을 버리지 말 것.
+On conflict (a `CONFLICT` message):
 
-해결 후:
 ```bash
-git add <해결한파일>
-# merge였으면:
+git status        # list conflicted files
+```
+
+Open each conflicted file and look at the `<<<<<<<`, `=======`, `>>>>>>>` markers.
+- The `HEAD` side = my fork's edits
+- The other side = upstream's change
+
+For each conflict, **show the user and confirm** which side to keep (or how to combine both) before resolving. Do not arbitrarily discard one side.
+
+After resolving:
+```bash
+git add <resolved-file>
+# if it was a merge:
 git commit
-# cherry-pick이었으면:
+# if it was a cherry-pick:
 git cherry-pick --continue
 ```
 
-중단하고 원래대로 되돌리려면:
+To abort and revert:
 ```bash
-git merge --abort          # 또는
+git merge --abort          # or
 git cherry-pick --abort
 ```
 
-## 5단계: 마무리
+## Step 7: Wrap up
 
 ```bash
-git log --oneline -5      # 결과 확인
+git log --oneline -5      # verify the result
 ```
 
-- 무엇을 가져왔는지(커밋/파일), 충돌은 어떻게 해결했는지 요약 보고.
-- push는 사용자가 명시적으로 요청할 때만:
+- Summarize (in Korean) what was pulled, what was deliberately left out (commits/files), and how conflicts were resolved.
+- Push only when the user explicitly asks:
   ```bash
-  git push origin <브랜치>
+  git push origin <branch>
   ```
 
-## 원칙
-- 검토 → 확인 → 실행 순서를 절대 건너뛰지 않는다.
-- 충돌 해결과 push는 사용자 확인 없이 하지 않는다.
-- 파괴적 작업(reset --hard 등) 전엔 백업 브랜치를 제안한다.
+## Principles
+- Before pulling, **read the code and explain what each commit does**. Never just list hashes/messages.
+- Never skip the order: review → explain → compare → confirm → execute.
+- Do not pull commits the user doesn't want. When in doubt, leave them out.
+- Do not resolve conflicts or push without the user's confirmation.
+- Suggest a backup branch before destructive operations (reset --hard, etc.).
+- Speak to the user in Korean; keep this document and your internal reasoning in English.
